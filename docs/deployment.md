@@ -8,6 +8,7 @@ everything in one SQLite file. Phones and tablets on the range reach it over the
 - [Option B: Node directly](#option-b-node-directly)
 - [Configuration reference](#configuration-reference)
 - [HTTPS and certificates](#https-and-certificates)
+  - [Using your own certificate](#using-your-own-certificate)
 - [Running behind a reverse proxy](#running-behind-a-reverse-proxy)
 - [Backups and restore](#backups-and-restore)
 - [Updating](#updating)
@@ -55,6 +56,8 @@ What the Compose setup does:
 | `HOST_PORT` | No | Host port to publish (default `3000`). |
 | `ADMIN_USERNAME` / `ADMIN_PASSWORD` | No | Used **only** when the database has no admin yet. If the password is empty, a random one is printed in the logs. |
 | `DATA_DIR` | No | Host folder for the data instead of the named volume. Create the folder first. |
+| `TLS_CERT` / `TLS_KEY` | No | Your own certificate and key, as `/certs/...` paths ([details](#using-your-own-certificate)). Leave unset for self-signed. |
+| `TLS_CERT_DIR` | No | Host folder mounted read-only at `/certs` (default `./certs`). |
 | `PUID` / `PGID` | With `DATA_DIR` | The folder owner's ids (`id -u`, `id -g`), so the container can write there. |
 | `HTTPS` | No | Set to `0` behind a TLS-terminating proxy (see below). |
 
@@ -114,7 +117,7 @@ All configuration is through environment variables. Nothing is read from a confi
 | `PORT` | `3000` | Listening port. With HTTPS on, plain HTTP on the same port is redirected to HTTPS. |
 | `DB_PATH` | `data/pellet-pace.db` (Docker: `/app/data/pellet-pace.db`) | SQLite database file. Its folder is created if missing. |
 | `HTTPS` | on | `0` serves plain HTTP. Any other value or unset means HTTPS. |
-| `TLS_CERT` / `TLS_KEY` | unset | PEM certificate and key to use instead of a self-signed one. Set both or neither. |
+| `TLS_CERT` / `TLS_KEY` | unset | PEM certificate (chain) and unencrypted key to use instead of a self-signed one. Set both or neither. See [Using your own certificate](#using-your-own-certificate). |
 | `TLS_DIR` | `<folder of DB_PATH>/tls` | Where the self-signed `cert.pem` / `key.pem` are kept. |
 | `TLS_HOSTS` | auto-detected | Names/IPs the self-signed certificate must cover (also the URLs printed at start-up). |
 | `COOKIE_SECURE` | unset | With `HTTPS=0`, set to `1` if a proxy serves the site over HTTPS. |
@@ -131,9 +134,59 @@ address in `TLS_HOSTS` (or the detected ones). Every device shows a certificate 
 time and after each regeneration. Users choose *Advanced → Proceed* (wording differs per browser).
 To avoid regenerations, keep the machine's IP fixed and set `TLS_HOSTS` explicitly.
 
-**Your own certificate.** Set `TLS_CERT` and `TLS_KEY` to PEM files, for example from an internal CA
-whose root is installed on the range devices. In Docker, mount the files into the container
-and point the variables at the mounted paths. The app reads them only at start-up, so restart it after renewing them.
+### Using your own certificate
+
+Use your own certificate if you have a domain name with a real certificate (e.g. Let's Encrypt), or an internal CA
+whose root is installed on the range devices. Devices then connect without a warning, as long as they
+use a name the certificate covers.
+
+You need two PEM files:
+- **the certificate:** for Let's Encrypt, use `fullchain.pem` (your certificate followed by the intermediates), and
+- **its private key**, unencrypted (no passphrase).
+
+**Docker:**
+
+1. Put both files in a `certs` folder next to `docker-compose.yml`:
+
+   ```sh
+   mkdir -p certs
+   cp /path/to/fullchain.pem /path/to/privkey.pem certs/
+   sudo chown 1000:1000 certs/*.pem    # the container user (your PUID if you changed it)
+   chmod 600 certs/privkey.pem
+   ```
+
+2. Add to `.env`. These are paths **inside** the container, where the folder is mounted read-only at `/certs`:
+
+   ```sh
+   TLS_CERT=/certs/fullchain.pem
+   TLS_KEY=/certs/privkey.pem
+   ```
+
+   To keep the files somewhere else, for example where certbot writes them, also set `TLS_CERT_DIR` to that host folder.
+   Mount the folder that holds the real files, not one that only contains symlinks to them.
+   With certbot, that's `/etc/letsencrypt/archive/<domain>` (the files there are numbered, e.g. `fullchain3.pem`),
+   or a deploy hook that copies the new files into `certs/`.
+
+3. Run `docker compose up -d`, then `docker compose logs`. You should see a line like:
+
+   ```
+   Using TLS certificate /certs/fullchain.pem for DNS:range.example.com, valid until 2027-01-19
+   ```
+
+**Node:** set `TLS_CERT` and `TLS_KEY` to the files' real paths. They must be readable by the user running the app.
+
+**Renewing:** the files are read only at start-up. After replacing them, run `docker compose restart` (or restart
+the Node process). The log warns at start-up when the certificate expires within 14 days.
+
+**Going back to self-signed:** remove `TLS_CERT` and `TLS_KEY` from `.env` and run `docker compose up -d`.
+
+The certificate folder is always mounted, so Docker creates an empty `certs` folder if there isn't one. That's
+harmless: it's ignored by git and unused until `TLS_CERT`/`TLS_KEY` are set. If a certificate can't be loaded, the app
+exits with a `TLS_CERT / TLS_KEY:` message, and Docker keeps restarting it until you fix it. Check `docker compose logs`.
+
+When `TLS_CERT`/`TLS_KEY` are set, `TLS_HOSTS` and `TLS_DIR` are not used for the certificate.
+The certificate must cover the name devices use, so the address you give out must be a name on the
+certificate, not the bare IP address.
 
 ## Running behind a reverse proxy
 
@@ -271,6 +324,12 @@ from the Users page, it signs that user out everywhere.
 | --- | --- |
 | `Cannot open the database at …` on start | The data folder isn't writable by the process user. In Docker with `DATA_DIR`, set `PUID`/`PGID` to the folder's owner. |
 | `Could not create a self-signed certificate` | OpenSSL is missing. Install it, set `TLS_CERT`/`TLS_KEY`, or use `HTTPS=0`. |
+| `TLS_CERT / TLS_KEY: Cannot read /certs/…` | The file isn't in the mounted folder. Check `TLS_CERT_DIR` and the file names, and don't point at symlinks into a folder that isn't mounted. |
+| `TLS_CERT / TLS_KEY: … is not readable by uid 1000` | `chown 1000:1000` the files (or your `PUID`), or make the certificate world-readable and `chmod 640` the key with a matching group. |
+| `TLS_CERT / TLS_KEY: … is not the key for …` | The key and certificate don't belong together. After a renewal, both files must come from the same renewal. |
+| `TLS_CERT / TLS_KEY: … is not a PEM certificate` | The file is DER or PFX. Convert it: `openssl x509 -in cert.der -inform der -out cert.pem`, or for PFX `openssl pkcs12 -in cert.pfx -nokeys -out cert.pem` and `openssl pkcs12 -in cert.pfx -nocerts -nodes -out key.pem`. |
+| `TLS_CERT / TLS_KEY: … is protected by a passphrase` | The app can't ask for a passphrase. Save an unencrypted copy: `openssl pkey -in enc.key -out key.pem`. |
+| Browser warns although you use your own certificate | The device used an address the certificate doesn't cover (e.g. the IP), or the CA root isn't installed on the device. |
 | Certificate warning appears again on every device | The certificate was regenerated because the IP or `TLS_HOSTS` changed. Fix the IP with a DHCP reservation. |
 | Devices can't connect, but `localhost` works | Firewall, wrong IP, or devices on a guest/isolated Wi-Fi network. |
 | "Too many attempts" for everyone | Sign-in rate limit, often behind a proxy (see above). It clears after 15 minutes or on restart. |

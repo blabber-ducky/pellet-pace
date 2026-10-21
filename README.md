@@ -68,7 +68,8 @@ regenerated automatically if the machine's IP changes or the certificate is abou
 Browsers will warn about the self-signed certificate the first time on each device — choose
 "Advanced → Proceed". Plain `http://` requests on the same port are redirected to `https://`.
 
-- Use your own certificate: set `TLS_CERT` and `TLS_KEY` to PEM file paths.
+- Use your own certificate: set `TLS_CERT` and `TLS_KEY` to PEM file paths. With Docker, put the files in `./certs`
+  and use `/certs/...` paths. See [Using your own certificate](docs/deployment.md#using-your-own-certificate).
 - Behind a reverse proxy that handles TLS: set `HTTPS=0` (and `COOKIE_SECURE=1` if the proxy serves HTTPS).
 
 | Env var         | Default               | Purpose                                         |

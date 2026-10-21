@@ -1,6 +1,7 @@
 import http from 'node:http';
 import https from 'node:https';
 import net from 'node:net';
+import tls from 'node:tls';
 import os from 'node:os';
 import crypto from 'node:crypto';
 import path from 'node:path';
@@ -688,6 +689,46 @@ function certHosts() {
   return [...new Set(hosts)].map((host) => (net.isIP(host) ? { type: 'IP', host } : { type: 'DNS', host }));
 }
 
+// Reads the operator's own certificate and key, failing with a readable message instead of a stack trace.
+function loadCustomTls(certFile, keyFile) {
+  const fail = (message) => {
+    console.error(`TLS_CERT / TLS_KEY: ${message}`);
+    process.exit(1);
+  };
+  const read = (file) => {
+    try {
+      return readFileSync(file);
+    } catch (err) {
+      return fail(err.code === 'EACCES'
+        ? `${file} is not readable by uid ${process.getuid?.()} (in Docker, check PUID/PGID or the file's permissions).`
+        : `Cannot read ${file}: ${err.message}`);
+    }
+  };
+  const cert = read(certFile);
+  const key = read(keyFile);
+  const certText = cert.toString('latin1');
+  const keyText = key.toString('latin1');
+  if (!certText.includes('-----BEGIN CERTIFICATE-----')) fail(`${certFile} is not a PEM certificate (convert DER/PFX files to PEM).`);
+  if (!/-----BEGIN [A-Z ]*PRIVATE KEY-----/.test(keyText)) fail(`${keyFile} is not a PEM private key.`);
+  if (/ENCRYPTED/.test(keyText)) fail(`${keyFile} is protected by a passphrase; remove it with \`openssl pkey -in ${keyFile} -out key.pem\`.`);
+
+  let x509;
+  try {
+    x509 = new crypto.X509Certificate(cert);
+    if (!x509.checkPrivateKey(crypto.createPrivateKey(key))) fail(`${keyFile} is not the key for ${certFile}.`);
+    tls.createSecureContext({ cert, key });
+  } catch (err) {
+    fail(`${certFile} / ${keyFile} can't be used: ${err.message}`);
+  }
+
+  const expires = new Date(x509.validTo);
+  console.log(`Using TLS certificate ${certFile} for ${x509.subjectAltName || x509.subject}, valid until ${expires.toISOString().slice(0, 10)}`);
+  const days = (expires.getTime() - Date.now()) / (24 * 3600 * 1000);
+  if (days < 0) console.warn('WARNING: this certificate has expired. Browsers will reject it.');
+  else if (days < 14) console.warn(`WARNING: this certificate expires in ${Math.ceil(days)} days.`);
+  return { cert, key };
+}
+
 // Loads TLS_CERT/TLS_KEY if given, otherwise a self-signed certificate that is (re)generated with
 // OpenSSL whenever it is missing, about to expire, or doesn't cover the names from certHosts().
 function loadTls() {
@@ -696,7 +737,7 @@ function loadTls() {
       console.error('Set both TLS_CERT and TLS_KEY, or neither.');
       process.exit(1);
     }
-    return { cert: readFileSync(process.env.TLS_CERT), key: readFileSync(process.env.TLS_KEY) };
+    return loadCustomTls(process.env.TLS_CERT, process.env.TLS_KEY);
   }
 
   const certFile = path.join(TLS_DIR, 'cert.pem');
@@ -767,7 +808,9 @@ if (USE_HTTPS) {
     socket.on('error', () => socket.destroy());
   }).listen(PORT, () => {
     printUrls('https');
-    console.log('The certificate is self-signed, so browsers will show a warning the first time — choose to proceed.');
+    if (!process.env.TLS_CERT) {
+      console.log('The certificate is self-signed, so browsers will show a warning the first time — choose to proceed.');
+    }
   });
 } else {
   http.createServer(handleRequest).listen(PORT, () => printUrls('http'));

@@ -15,10 +15,15 @@ services:
       ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
       HTTPS: ${HTTPS:-1}
+      # Your own certificate instead of the self-signed one: paths inside the container, under /certs.
+      TLS_CERT: ${TLS_CERT:-}
+      TLS_KEY: ${TLS_KEY:-}
     volumes:
       # Deployment data (database + certificate). Defaults to the named volume below;
       # set DATA_DIR to a host path (e.g. /srv/pellet-pace) to use a folder instead.
       - ${DATA_DIR:-pellet-pace-data}:/app/data
+      # Folder holding your own certificate and key, mounted read-only at /certs.
+      - ${TLS_CERT_DIR:-./certs}:/certs:ro
 
 volumes:
   pellet-pace-data:
