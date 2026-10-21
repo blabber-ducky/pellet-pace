@@ -66,7 +66,9 @@ docs/                User, deployment and development docs
    sent as the `pp_session` cookie (HttpOnly, SameSite=Lax, Secure when HTTPS, 14 days). An in-memory
    rate limit allows 10 failed logins/sign-ups per IP per 15 minutes.
 4. **Access control.** `requireUser(ctx, ...roles)`, `loadEvent` (admin: any event; host: own events;
-   shooter: events they entered, otherwise 404) and `loadManagedEvent` (must be able to manage).
+   anyone: events they have an entry in, otherwise 404) and `loadManagedEvent` (must be able to manage).
+   Roles are cumulative (admin ⊇ host ⊇ shooter): anyone can join an event and press STOP. Shooter features depend on
+   having an entry, not on the role.
 5. **Leaderboard.** `eventDetail()` builds the full event payload. `withRanks()` gives equal times equal rank.
 6. **Routes.** `route(method, regex, handler)`. A handler receives `ctx`
    (`user`, `body`, `params`, `ip`, `cookies` to set) and returns a JSON-serialisable object, or throws `HttpError`.
@@ -118,7 +120,7 @@ with a 4xx status. Unexpected failures return 500 with a generic message, and th
 | `POST /register` | anyone | `name`, `username`, `password` | `{ user }` (shooter) + cookie |
 | `POST /logout` | anyone | — | `{ ok }` |
 | `POST /me/password` | signed in | `current`, `next` | `{ ok }` |
-| `GET /events` | signed in | — | Staff: `{ events }` they manage (all, for admin), with `invite_code`, `host_name`, `participant_count`. Shooter: `{ events }` they joined, with `ms`, `rank`. |
+| `GET /events` | signed in | — | `{ events, joined }`. `joined`: events the user has an entry in, with `ms`, `rank` (every role). `events`: for staff, the events they manage (all, for admin) with `invite_code`, `host_name`, `participant_count`; for shooters, the same as `joined`. |
 | `POST /events` | host, admin | `name` (≤ 80) | `{ event: { id } }` |
 | `GET /events/:id` | manager or entrant | — | Event detail (below) |
 | `POST /events/:id/start` | manager | — | Event detail. 409 unless `waiting` with at least one entry. |
@@ -126,8 +128,9 @@ with a 4xx status. Unexpected failures return 500 with a generic message, and th
 | `POST /events/:id/clear` | manager | `user_id` | Event detail. 409 unless `running`. |
 | `GET /events/:id/results.csv` | manager | — | CSV download (`Content-Disposition: attachment`): Rank, Shooter, Time, Time (ms), Gap, Status. UTF-8 with BOM, CRLF line endings. Names starting with `= + - @` get a `'` prefix so spreadsheets don't run them as formulas. |
 | `DELETE /events/:id` | manager | — | `{ ok }` |
-| `POST /join` | shooter | `code` | `{ event_id }`. Repeat joins are allowed. 409 once the event has started. |
-| `POST /events/:id/stop` | entrant | — | Event detail. 409 if not running or already stopped. |
+| `POST /join` | signed in (any role) | `code` | `{ event_id }`. Repeat joins are allowed. 409 once the event has started. |
+| `POST /events/:id/participate` | manager | `join` (`true`/`false`) | Event detail. Joins or leaves the event as a shooter without the invite code. 409 once started. |
+| `POST /events/:id/stop` | entrant | — | Event detail. 403 if you have no entry, 409 if not running or already stopped. |
 | `GET /users` | admin | — | `{ users }` |
 | `POST /users` | admin | `name`, `username`, `password`, `role` | `{ ok }` |
 | `DELETE /users/:id` | admin | — | `{ ok }`. An admin can't delete their own account. |
@@ -144,10 +147,11 @@ with a 4xx status. Unexpected failures return 500 with a generic message, and th
   "event": { "id", "name", "status", "started_at", "finished_at", "created_at", "host_name",
              "invite_code" /* managers only */ },
   "canManage": true,
+  "canParticipate": false,                            // manager, and the event is still waiting
   "participantCount": 12,
   "results": [{ "user_id", "name", "ms", "rank" }],   // stopped, fastest first
   "pending": [{ "user_id", "name" }],                 // not stopped (DNF once finished)
-  "me": { "user_id", "stopped", "ms", "rank" },       // shooters only, else null
+  "me": { "user_id", "stopped", "ms", "rank" },       // anyone with an entry (incl. the host), else null
   "now": 1760000000000                                // server clock
 }
 ```

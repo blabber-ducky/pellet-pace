@@ -27,11 +27,13 @@ Tip: add the page to your home screen, or bookmark it, so you can find it next t
 | Role | Can do | How to get the account |
 | --- | --- | --- |
 | **Shooter** | Join events with an invite code, press STOP, see leaderboards for events they joined and their own history. | Sign up on the **Create an account** page, or ask an admin. |
-| **Host** | Create events, start and end them, clear a time, export results as CSV, delete their own events, see all their current and previous events. | An admin creates it, or changes an existing account's role. |
+| **Host** | Everything a shooter can do, plus: create events, start and end them, clear a time, export results as CSV, delete their own events, see all their current and previous events. | An admin creates it, or changes an existing account's role. |
 | **Admin** | Everything a host can do for **every** event, plus add and remove users, change roles, reset passwords and view stats. | The first admin is created when the app is installed. Admins can create more. |
 
-Only shooter accounts can join events as competitors. If a host wants to shoot too, they need a
-separate shooter account.
+Each role includes the one below it: **hosts and admins can also shoot**. They join any event with its invite code
+or join link, like a shooter, and see their results under **My events** on the Events page. Joining someone else's event
+doesn't give you its host controls. To shoot in an event you run, use **I'm shooting too** on the event page
+(see [Shoot in an event you run](#shoot-in-an-event-you-run)).
 
 Everyone can change their own password with **Change password** at the bottom of their home page.
 
@@ -114,6 +116,26 @@ Shooters who haven't stopped are listed at the end as *Still shooting* while the
   the start and after the end, but not while the event is live.
 - Hosts see only their own events. Admins see every event.
 
+### Shoot in other events
+
+As a host you're also a shooter. Under **Shooting** on the Events page, enter another host's invite code in
+**Join an event** (or open their join link), then use **STOP** like any shooter. Your results appear under **My events**
+on the same page. You don't get the other host's controls or invite code.
+
+### Shoot in an event you run
+
+You can compete in an event you're running, on the same phone or tablet you run it from. Admins can do this for any event.
+
+1. Before starting, tap **I'm shooting too** on the event page. You appear in the **Joined** list, and a green note
+   confirms you're in. Tap **Not shooting** to change your mind. You can switch until you start the event.
+2. Tap **Start for everyone**. Your timer starts at the same moment as everyone else's.
+3. While the event is running, the big **STOP** button sits at the top of your screen, with the host controls
+   (shooters stopped, **End event**) below it. Press **STOP** when you finish. Your time counts like anyone else's.
+4. If you pressed STOP by mistake, you can **Clear** your own time in the leaderboard, as for any shooter.
+
+Your result appears on the leaderboard, in the CSV export, and in the admins' stats. If you're the only one who joined,
+you can still start the event, for example to practise.
+
 ### Tips for a smooth start
 
 - Ask shooters to sign in and join **before** they go to their lanes. Joining is the slowest step.
@@ -135,8 +157,8 @@ Admins also have the **Users** and **Stats** pages.
 - **Change a role** with the drop-down in the **Role** column (**Shooter**, **Host** or **Admin**). It saves straight
   away and applies on that user's next page load, with no need to sign in again. Nothing is deleted, so switching back
   restores everything:
-  - A **shooter made host or admin** keeps their results on leaderboards, but can no longer join events, and their
-    **My events** history is hidden while they have a staff role.
+  - A **shooter made host or admin** keeps their results and history, and can still join events as a shooter.
+    They now also get the Events page and its host features.
   - A **host made shooter** can no longer create or manage events. Their events stay, still showing them as host,
     and admins can still run, end or delete them. If they had a live event, an admin will need to end it.
   - A **new admin** gets the Users and Stats pages and every event.
@@ -155,7 +177,7 @@ The **Stats** page gives an overview of the whole range:
 
 - **Totals:** users by role, events by status, entries and times recorded, and the **finish rate**
   (the share of entries in finished events that weren't *did not finish*).
-- **Shooters:** for each shooter, the events joined, times recorded, DNFs, **wins** (1st place) and
+- **Shooters:** for each shooter, and each host who has shot in their own events (marked with their role), the events joined, times recorded, DNFs, **wins** (1st place) and
   **podiums** (top 3), and the date of their last event. Wins and podiums count only finished events,
   because ranks can still change while an event is live.
 - **Hosts and admins:** the events each one created, how many of them are finished, total shooter

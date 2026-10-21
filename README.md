@@ -43,6 +43,7 @@ docker compose logs           # shows the admin password on first start
 
 1. A **host** (or admin) creates an event by name and gets an invite code / join link.
 2. **Shooters** sign in (or create an account), enter the code, and wait on the event screen.
+   Hosts and admins can shoot too: in someone else's event with its code, or in their own with **I'm shooting too**.
 3. The host presses **Start for everyone** — one shared start time for all joined shooters.
    Nobody can join after this.
 4. Each shooter presses **STOP** once when done. That time is final.
@@ -56,7 +57,7 @@ resumes from the shared start.
 
 - **Admin** — everything a host can do, sees every event, manages users, changes their roles and resets passwords (Users page),
   sees usage and shooter stats (Stats page).
-- **Host** — creates and runs their own events, exports results as CSV, sees all of their current and previous events.
+- **Host** — everything a shooter can do (joins and shoots in any event), plus creates and runs their own events, exports results as CSV, sees all of their current and previous events.
 - **Shooter** — signs up themselves (or is added by an admin), joins events with an invite code,
   sees the live leaderboard for events they're in and their history of previous events.
 

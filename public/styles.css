@@ -238,6 +238,17 @@ button:focus-visible, .btn:focus-visible { outline: 3px solid var(--primary); ou
 .invite-link { font-size: 0.9rem; opacity: 0.9; word-break: break-all; }
 
 .host-controls { display: grid; gap: 12px; }
+.participating {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 10px 14px;
+  border-radius: 10px;
+  background: var(--go-soft);
+  color: var(--go-text);
+}
 .host-controls p { margin: 0; }
 .is-live { border: 2px solid var(--stop); }
 

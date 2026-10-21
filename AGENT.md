@@ -25,6 +25,8 @@ range LAN, used from phones and tablets, often on weak Wi-Fi, by non-technical p
    The legacy `games`/`players`/`runs` tables are deliberately left in place.
 6. **Authorise on the server.** Every new route starts with `requireUser(...)` or
    `loadEvent`/`loadManagedEvent`. Return 404 for events the user can't see.
+   **Roles are cumulative: admin ⊇ host ⊇ shooter.** Every role can join and shoot in events. Gate shooter actions
+   (join, STOP, results history) on having an entry, never on `role === 'shooter'`. Gate managing on `canManage`.
 7. **Keep CSRF protection.** State-changing requests require `Content-Type: application/json` (`readJson`).
    Don't add form-encoded endpoints, CORS headers or state-changing GETs.
 8. **No HTML injection.** Build DOM with `h()`. Never put user data into `innerHTML`, `outerHTML`,

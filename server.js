@@ -249,15 +249,14 @@ function requireUser(ctx, ...roles) {
 
 const isStaff = (user) => user.role === 'admin' || user.role === 'host';
 
-// Hosts manage their own events, admins manage all; shooters may view events they entered.
+// Hosts manage their own events, admins manage all; anyone may view events they entered
+// (shooters, and hosts shooting in their own event).
 function loadEvent(ctx, id) {
   const user = requireUser(ctx);
   const event = db.prepare('SELECT * FROM events WHERE id = ?').get(Number(id));
   if (!event) throw new HttpError(404, 'Event not found');
   const canManage = user.role === 'admin' || (user.role === 'host' && event.host_id === user.id);
-  const entry = user.role === 'shooter'
-    ? db.prepare('SELECT * FROM entries WHERE event_id = ? AND user_id = ?').get(event.id, user.id)
-    : null;
+  const entry = db.prepare('SELECT * FROM entries WHERE event_id = ? AND user_id = ?').get(event.id, user.id) || null;
   if (!canManage && !entry) throw new HttpError(404, 'Event not found');
   return { event, canManage, entry };
 }
@@ -302,14 +301,17 @@ function eventDetail(event, user, canManage) {
     .sort((a, b) => a.ms - b.ms));
   const pending = entries.filter((e) => e.stopped_at == null).map((e) => ({ user_id: e.user_id, name: e.name }));
   const mine = results.find((r) => r.user_id === user.id);
+  const entered = entries.some((e) => e.user_id === user.id);
 
   return {
     event: publicEvent(event, canManage),
     canManage,
+    // Managers may join or leave it as a shooter from the event page until it starts.
+    canParticipate: canManage && event.status === 'waiting',
     participantCount: entries.length,
     results,
     pending,
-    me: user.role === 'shooter' ? { user_id: user.id, stopped: Boolean(mine), ms: mine?.ms ?? null, rank: mine?.rank ?? null } : null,
+    me: entered ? { user_id: user.id, stopped: Boolean(mine), ms: mine?.ms ?? null, rank: mine?.rank ?? null } : null,
     now: Date.now(),
   };
 }
@@ -403,18 +405,10 @@ route('POST', /^\/api\/me\/password$/, (ctx) => {
 
 // --- events ---
 
-route('GET', /^\/api\/events$/, (ctx) => {
-  const user = requireUser(ctx);
-  if (isStaff(user)) {
-    const sql = `
-      SELECT ev.id, ev.name, ev.invite_code, ev.status, ev.started_at, ev.finished_at, ev.created_at,
-             u.name AS host_name, (SELECT COUNT(*) FROM entries x WHERE x.event_id = ev.id) AS participant_count
-      FROM events ev LEFT JOIN users u ON u.id = ev.host_id
-      ${user.role === 'admin' ? '' : 'WHERE ev.host_id = ?'}
-      ORDER BY ev.created_at DESC`;
-    return { events: user.role === 'admin' ? db.prepare(sql).all() : db.prepare(sql).all(user.id) };
-  }
-  const rows = db.prepare(`
+// Events the user has an entry in, with their time and rank. Every role can shoot, so this is
+// everyone's "My events" history.
+function joinedEvents(userId) {
+  return db.prepare(`
     SELECT ev.id, ev.name, ev.status, ev.started_at, ev.finished_at, ev.created_at, en.stopped_at,
            (SELECT COUNT(*) FROM entries x WHERE x.event_id = ev.id) AS participant_count,
            CASE WHEN en.stopped_at IS NULL THEN NULL ELSE
@@ -423,10 +417,22 @@ route('GET', /^\/api\/events$/, (ctx) => {
            END AS rank
     FROM entries en JOIN events ev ON ev.id = en.event_id
     WHERE en.user_id = ? ORDER BY ev.created_at DESC
-  `).all(user.id);
-  return {
-    events: rows.map(({ stopped_at, ...row }) => ({ ...row, ms: stopped_at == null ? null : stopped_at - row.started_at })),
-  };
+  `).all(userId).map(({ stopped_at, ...row }) => ({ ...row, ms: stopped_at == null ? null : stopped_at - row.started_at }));
+}
+
+// Staff get the events they manage in `events`; everyone gets the events they joined in `joined`
+// (for shooters `events` is the same list, as before).
+route('GET', /^\/api\/events$/, (ctx) => {
+  const user = requireUser(ctx);
+  const joined = joinedEvents(user.id);
+  if (!isStaff(user)) return { events: joined, joined };
+  const sql = `
+    SELECT ev.id, ev.name, ev.invite_code, ev.status, ev.started_at, ev.finished_at, ev.created_at,
+           u.name AS host_name, (SELECT COUNT(*) FROM entries x WHERE x.event_id = ev.id) AS participant_count
+    FROM events ev LEFT JOIN users u ON u.id = ev.host_id
+    ${user.role === 'admin' ? '' : 'WHERE ev.host_id = ?'}
+    ORDER BY ev.created_at DESC`;
+  return { events: user.role === 'admin' ? db.prepare(sql).all() : db.prepare(sql).all(user.id), joined };
 });
 
 route('POST', /^\/api\/events$/, (ctx) => {
@@ -481,8 +487,9 @@ route('DELETE', /^\/api\/events\/(\d+)$/, (ctx) => {
   return { ok: true };
 });
 
+// Every role can join an event as a shooter: hosts and admins have shooter privileges too.
 route('POST', /^\/api\/join$/, (ctx) => {
-  const user = requireUser(ctx, 'shooter');
+  const user = requireUser(ctx);
   const code = String(ctx.body.code || '').trim().toUpperCase();
   const event = db.prepare('SELECT * FROM events WHERE invite_code = ?').get(code);
   if (!event) throw new HttpError(404, 'No event with that invite code');
@@ -494,14 +501,27 @@ route('POST', /^\/api\/join$/, (ctx) => {
   return { event_id: event.id };
 });
 
+// Whoever manages an event can join or leave it as a shooter from the event page, without the
+// invite code (body { join: true|false }).
+route('POST', /^\/api\/events\/(\d+)\/participate$/, (ctx) => {
+  const event = loadManagedEvent(ctx, ctx.params[0]);
+  if (event.status !== 'waiting') throw new HttpError(409, 'This event has already started');
+  if (ctx.body.join === false) {
+    db.prepare('DELETE FROM entries WHERE event_id = ? AND user_id = ?').run(event.id, ctx.user.id);
+  } else {
+    db.prepare('INSERT OR IGNORE INTO entries (event_id, user_id, joined_at) VALUES (?, ?, ?)').run(event.id, ctx.user.id, Date.now());
+  }
+  return eventDetail(event, ctx.user, true);
+});
+
 route('POST', /^\/api\/events\/(\d+)\/stop$/, (ctx) => {
-  requireUser(ctx, 'shooter');
-  const { event, entry } = loadEvent(ctx, ctx.params[0]);
+  const { event, entry, canManage } = loadEvent(ctx, ctx.params[0]);
+  if (!entry) throw new HttpError(403, 'You’re not shooting in this event');
   if (event.status !== 'running') throw new HttpError(409, event.status === 'waiting' ? 'The event hasn’t started yet' : 'This event has ended');
   if (entry.stopped_at != null) throw new HttpError(409, 'Your time is already recorded');
   db.prepare('UPDATE entries SET stopped_at = ? WHERE event_id = ? AND user_id = ? AND stopped_at IS NULL')
     .run(Date.now(), event.id, ctx.user.id);
-  return eventDetail(event, ctx.user, false);
+  return eventDetail(event, ctx.user, canManage);
 });
 
 // --- users (admin) ---
@@ -586,7 +606,7 @@ route('GET', /^\/api\/stats$/, (ctx) => {
                END AS rank
         FROM entries en JOIN events ev ON ev.id = en.event_id
       )
-      SELECT u.id, u.name, u.username, u.created_at,
+      SELECT u.id, u.name, u.username, u.role, u.created_at,
              COUNT(r.user_id) AS events,
              COUNT(r.stopped_at) AS finished,
              COUNT(CASE WHEN r.status = 'finished' AND r.stopped_at IS NULL THEN 1 END) AS dnf,
@@ -594,8 +614,10 @@ route('GET', /^\/api\/stats$/, (ctx) => {
              COUNT(CASE WHEN r.status = 'finished' AND r.rank <= 3 THEN 1 END) AS podiums,
              MAX(r.joined_at) AS last_event_at
       FROM users u LEFT JOIN ranked r ON r.user_id = u.id
-      WHERE u.role = 'shooter'
-      GROUP BY u.id ORDER BY events DESC, u.name
+      GROUP BY u.id
+      -- Hosts who shot in their own events are listed too.
+      HAVING u.role = 'shooter' OR COUNT(r.user_id) > 0
+      ORDER BY events DESC, u.name
     `).all(),
     staff: db.prepare(`
       SELECT u.id, u.name, u.username, u.role,

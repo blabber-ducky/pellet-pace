@@ -163,7 +163,7 @@ const pendingCode = {
 
 function afterSignIn() {
   const code = pendingCode.get();
-  if (code && me.role === 'shooter') go(`/join/${code}`);
+  if (code) go(`/join/${code}`);
   else go(homePath());
 }
 
@@ -277,10 +277,6 @@ async function joinFromLink(code) {
     return go('/login');
   }
   pendingCode.clear();
-  if (me.role !== 'shooter') {
-    toast('Only shooter accounts can join events', true);
-    return go(homePath());
-  }
   try {
     const { event_id: eventId } = await api('POST', '/api/join', { code });
     go(`/event/${eventId}`);
@@ -292,39 +288,46 @@ async function joinFromLink(code) {
 
 // ---------- shooter home ----------
 
-async function viewHome() {
-  const mount = mounter();
-  const { events } = await api('GET', '/api/events');
+// Every role can shoot, so the shooter home and the staff events page both show these.
+function joinCard() {
   const error = h('p', { class: 'error' });
   const codeInput = h('input', {
     class: 'code', name: 'code', maxlength: 6, autocomplete: 'off', autocapitalize: 'characters',
     spellcheck: 'false', placeholder: 'ABC123', 'aria-label': 'Invite code', required: true,
   });
+  return h('div', { class: 'card' },
+    h('h2', {}, 'Join an event'),
+    h('form', {
+      class: 'stack',
+      onsubmit: formHandler(error, async () => {
+        const { event_id: eventId } = await api('POST', '/api/join', { code: codeInput.value });
+        go(`/event/${eventId}`);
+      }),
+    },
+    h('label', {}, 'Invite code from the host', codeInput),
+    error,
+    h('button', { class: 'btn btn-primary btn-block', type: 'submit' }, 'Join event')));
+}
 
-  const list = events.length
+function joinedList(events) {
+  return events.length
     ? h('div', { class: 'item-list' }, events.map((ev) => h('a', { class: 'item', href: `#/event/${ev.id}` },
       h('div', {},
         h('div', { class: 'title' }, ev.name, ' ', statusChip(ev.status)),
         h('div', { class: 'muted small' }, `${fmtDate(ev.created_at)} · ${ev.participant_count} shooters`)),
       h('div', { class: 'result' }, shooterResult(ev)))))
     : h('div', { class: 'empty' }, 'You haven’t joined any events yet.');
+}
+
+async function viewHome() {
+  const mount = mounter();
+  const { joined } = await api('GET', '/api/events');
 
   mount(h('div', {},
     h('div', { class: 'page-head' }, h('h1', {}, `Hi, ${me.name}`)),
-    h('div', { class: 'card' },
-      h('h2', {}, 'Join an event'),
-      h('form', {
-        class: 'stack',
-        onsubmit: formHandler(error, async () => {
-          const { event_id: eventId } = await api('POST', '/api/join', { code: codeInput.value });
-          go(`/event/${eventId}`);
-        }),
-      },
-      h('label', {}, 'Invite code from your host', codeInput),
-      error,
-      h('button', { class: 'btn btn-primary btn-block', type: 'submit' }, 'Join event'))),
+    joinCard(),
     h('h2', {}, 'My events'),
-    list,
+    joinedList(joined),
     h('div', { class: 'card spaced' }, passwordForm())));
 }
 
@@ -339,7 +342,7 @@ function shooterResult(ev) {
 
 async function viewEvents() {
   const mount = mounter();
-  const { events } = await api('GET', '/api/events');
+  const { events, joined } = await api('GET', '/api/events');
   const error = h('p', { class: 'error' });
   const nameInput = h('input', { name: 'name', maxlength: 80, placeholder: 'Saturday 10m air rifle', required: true });
 
@@ -375,6 +378,11 @@ async function viewEvents() {
     active.length ? h('div', { class: 'item-list' }, active.map(item)) : h('div', { class: 'empty' }, 'No current events.'),
     h('h2', { class: 'spaced' }, 'Previous events'),
     past.length ? h('div', { class: 'item-list' }, past.map(item)) : h('div', { class: 'empty' }, 'Finished events will appear here.'),
+    h('h2', { class: 'spaced' }, 'Shooting'),
+    h('p', { class: 'muted' }, 'You can shoot in any event: join with its invite code, or tap “I’m shooting too” on an event you run.'),
+    joinCard(),
+    h('h3', {}, 'My events'),
+    joinedList(joined),
     h('div', { class: 'card spaced' }, passwordForm())));
 }
 
@@ -443,8 +451,10 @@ async function viewEvent(id) {
       h('div', { class: 'page-head' },
         h('h1', {}, event.name, ' ', statusChip(event.status)),
         h('p', { class: 'muted' }, eventMeta(data))),
-      data.canManage ? hostPanel() : null,
-      data.me ? shooterPanel() : null,
+      // A host who is also shooting needs STOP above the host controls once the event is running.
+      ...(data.me && event.status !== 'waiting'
+        ? [shooterPanel(), data.canManage ? hostPanel() : null]
+        : [data.canManage ? hostPanel() : null, data.me ? shooterPanel() : null]),
       leaderboard()));
   }
 
@@ -468,18 +478,32 @@ async function viewEvent(id) {
             data.participantCount
               ? 'Starts the timer for every joined shooter at the same moment. Shooters can’t join after this.'
               : 'Waiting for shooters to join…'),
+          data.canParticipate ? participateToggle() : null,
           h('div', { class: 'center-row row' }, deleteButton())));
     }
     if (event.status === 'running') {
+      // The STOP panel above already shows the clock while the host is still shooting.
+      const showClock = !data.me || data.me.stopped;
       return h('div', { class: 'card host-controls is-live' },
-        h('div', { class: 'small muted center' }, 'Elapsed since start'),
-        h('div', { class: 'clock', dataset: { start: event.started_at } }, fmt(serverNow() - event.started_at)),
+        showClock ? h('div', { class: 'small muted center' }, 'Elapsed since start') : null,
+        showClock ? h('div', { class: 'clock', dataset: { start: event.started_at } }, fmt(serverNow() - event.started_at)) : null,
         h('p', { class: 'center' }, `${data.results.length} of ${data.participantCount} shooters stopped`),
         h('div', { class: 'center-row row' },
           confirmButton('End event', 'Tap again to end', () => act(api('POST', `/api/events/${id}/finish`)), 'btn btn-stop')),
         h('p', { class: 'muted small center' }, 'Anyone who hasn’t stopped when the event ends is marked “did not finish”.'));
     }
     return h('div', { class: 'row', style: 'margin-bottom:16px' }, deleteButton());
+  }
+
+  function participateToggle() {
+    const join = (value) => act(api('POST', `/api/events/${id}/participate`, { join: value }));
+    if (!data.me) {
+      return h('div', { class: 'center-row row' },
+        h('button', { class: 'btn btn-ghost', onclick: () => join(true) }, 'I’m shooting too'));
+    }
+    return h('div', { class: 'participating' },
+      h('span', {}, h('strong', {}, 'You’re shooting too.'), ' Your timer starts when you press Start; press STOP when you finish.'),
+      h('button', { class: 'btn btn-ghost btn-sm', onclick: () => join(false) }, 'Not shooting'));
   }
 
   function deleteButton() {
@@ -500,6 +524,8 @@ async function viewEvent(id) {
         h('div', { class: 'my-rank' }, `#${mine.rank} of ${data.participantCount}`));
     }
     if (event.status === 'waiting') {
+      // The host panel's "You're shooting too" note already covers this.
+      if (data.canParticipate) return null;
       return h('div', { class: 'card waiting' },
         h('div', { class: 'pulse' }),
         h('div', {},
@@ -705,7 +731,8 @@ async function viewStats() {
           h('thead', {}, h('tr', {},
             h('th', {}, 'Shooter'), numHead('Events'), numHead('Finished'), numHead('DNF'), numHead('Wins'), numHead('Podiums'), h('th', {}, 'Last event'))),
           h('tbody', {}, shooters.map((u) => h('tr', {},
-            h('td', {}, u.name, h('div', { class: 'muted small' }, u.username)),
+            h('td', {}, u.name, u.role === 'shooter' ? null : [' ', h('span', { class: 'chip chip-role' }, u.role)],
+              h('div', { class: 'muted small' }, u.username)),
             num(u.events), num(u.finished), num(u.dnf), num(u.wins), num(u.podiums),
             h('td', { class: 'muted nowrap' }, fmtDay(u.last_event_at)))))))
         : h('div', { class: 'empty' }, 'No shooters yet.')),
