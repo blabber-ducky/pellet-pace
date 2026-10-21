@@ -21,7 +21,7 @@ Set `ADMIN_USERNAME` / `ADMIN_PASSWORD` beforehand to choose them yourself.
 
 ```sh
 cp .env.example .env          # then edit TLS_HOSTS
-docker compose up -d --build  # https://<this machine>:3000
+docker compose up -d          # pulls m1v1n/pellet-pace from Docker Hub; https://<this machine>:3000
 docker compose logs           # shows the admin password on first start
 ```
 
@@ -30,11 +30,13 @@ docker compose logs           # shows the admin password on first start
   (only `docker compose down -v` deletes it).
 - To keep data in a host folder instead, create the folder and set `DATA_DIR`, `PUID` and `PGID` in `.env`
   (the ids of the folder's owner, from `id -u` / `id -g`).
-- Back up the volume: `docker run --rm --user root -v pellet-pace-data:/d -v "$PWD":/b pellet-pace tar czf /b/pellet-backup.tgz -C /d .`
+- Back up the volume: `docker run --rm --user root -v pellet-pace-data:/d -v "$PWD":/b m1v1n/pellet-pace tar czf /b/pellet-backup.tgz -C /d .`
   (or just copy the host folder when using `DATA_DIR`).
 - `TLS_HOSTS` must list the IPs/hostnames devices use to reach this machine (e.g. `192.168.1.20,range-pc.local`),
   because inside the container the app can't see the host's LAN addresses. Changing it regenerates the certificate.
-- Update after code changes: `docker compose up -d --build`. Stop: `docker compose down`.
+- Update to the newest image: `docker compose pull && docker compose up -d`. Stop: `docker compose down`.
+- Images for x86 (amd64) and ARM (arm64, e.g. Raspberry Pi) are built and pushed by GitHub Actions on every push to `main`.
+  Pin a version with `PELLET_PACE_TAG` in `.env`.
 - The project's own `./data` folder is only used by `npm start` (local development) and is never copied into the image.
 
 ## How an event runs

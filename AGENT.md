@@ -55,6 +55,21 @@ Match the existing code. It is deliberately compact:
 - Keep the user-facing words *host*, *shooter*, *event*, *invite code*, *Start for everyone*, *STOP*, *End event*,
   *Clear* and *did not finish* consistent with the existing UI and docs.
 
+## Git
+
+- **Always work on the `main` branch.** Commit directly to `main`. Don't create feature branches.
+- Commit or push only when the maintainer asks.
+- A push to `main` publishes a new `latest` image to Docker Hub (see below). Every commit on `main` must
+  work, because range machines may pull it.
+
+## Docker image and CI
+
+- `.github/workflows/docker.yml` builds `m1v1n/pellet-pace` for `linux/amd64` and `linux/arm64` and pushes it to
+  Docker Hub. `docker-compose.yml` pulls that image and never builds locally. Keep both architectures working:
+  no architecture-specific binaries or base images.
+- Keep the image name `m1v1n/pellet-pace` the same in the workflow, `docker-compose.yml` and the docs.
+- Never put Docker Hub credentials in the repository. The workflow reads the `DOCKERHUB_TOKEN` secret.
+
 ## Keep docs in sync
 
 When behaviour changes, update the docs in the same change:
@@ -62,6 +77,7 @@ When behaviour changes, update the docs in the same change:
 | You changed | Update |
 | --- | --- |
 | An environment variable or the Docker setup | `docs/deployment.md`, `README.md`, and `.env.example` / `docker-compose.yml` if relevant |
+| The CI workflow, image tags or release process | `docs/development.md` (Docker images and releases) and this file |
 | An API route, payload or the schema | `docs/development.md` |
 | Anything a shooter, host or admin sees or does | `docs/user-guide.md` (and `README.md` "How an event runs" if the flow changed) |
 | A standing convention | This file |
@@ -75,7 +91,8 @@ There is no automated test suite. Before declaring a change done:
 3. Exercise the affected flow in a browser or with curl (see docs/development.md → Testing). For timing or
    event-flow changes, run the whole manual checklist.
 4. For a schema change, test both a fresh database and a copy of an existing one.
-5. For Docker changes, run `docker compose up -d --build` and check that `docker compose ps` shows the container as healthy.
+5. For Docker changes, run `docker build -t m1v1n/pellet-pace:dev .` and `PELLET_PACE_TAG=dev docker compose up -d`, then check that
+   `docker compose ps` shows the container as healthy. The image must keep building for both `linux/amd64` and `linux/arm64`.
 
 If you can't run something, say so explicitly. Don't claim it works.
 
@@ -85,4 +102,5 @@ If you can't run something, say so explicitly. Don't claim it works.
 - Changing the timing model, ranking/tie rules, or the event lifecycle (`waiting → running → finished`).
 - Changing cookie, session, password-hashing or rate-limit behaviour.
 - Anything that deletes or rewrites existing data in a migration.
-- Committing, pushing or tagging releases.
+- Committing, pushing or tagging releases. Pushing to `main` or pushing a `v*` tag publishes images to Docker Hub.
+- Changing the image name, the target platforms or the workflow's triggers.

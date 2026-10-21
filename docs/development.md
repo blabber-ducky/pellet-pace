@@ -9,6 +9,7 @@
 - [Security notes](#security-notes)
 - [Common changes](#common-changes)
 - [Testing](#testing)
+- [Docker images and releases](#docker-images-and-releases)
 
 ## Quick start
 
@@ -38,7 +39,8 @@ public/app.js        Entire front end: hash router, views, polling, helpers
 public/styles.css    Styles, light and dark themes via CSS custom properties
 public/icon.svg      Logo and favicon
 Dockerfile           node:22-alpine + openssl, runs as `node`, data in /app/data
-docker-compose.yml   Deployment, driven by .env (see .env.example)
+docker-compose.yml   Deployment from the Docker Hub image, driven by .env (see .env.example)
+.github/workflows/   docker.yml: builds amd64 + arm64 images and pushes them to Docker Hub
 docs/                User, deployment and development docs
 ```
 
@@ -232,5 +234,44 @@ There is no automated test suite yet. Before committing, check by hand:
 5. Check the shooter's **My events** history, **Export CSV** as the host, and the admin's **Users**
    (including **Reset a password**) and **Stats** pages.
 6. Check the layout at phone width in both light and dark mode.
-7. For Docker changes: `docker compose up -d --build`, check the health status in `docker compose ps`,
+7. For Docker changes: build locally (`docker build -t m1v1n/pellet-pace:dev .`), run it with
+   `PELLET_PACE_TAG=dev docker compose up -d`, check the health status in `docker compose ps`,
    then restart and confirm the data persisted.
+
+## Docker images and releases
+
+`.github/workflows/docker.yml` builds the image for **`linux/amd64`** and **`linux/arm64`** (arm64 under QEMU)
+and pushes it to Docker Hub as [`m1v1n/pellet-pace`](https://hub.docker.com/r/m1v1n/pellet-pace).
+`docker-compose.yml` pulls that image, so deployments don't need a copy of the source.
+
+| Trigger | Image tags pushed |
+| --- | --- |
+| Push to `main` | `latest`, `sha-<short commit>` |
+| Tag `v1.2.3` | `1.2.3`, `1.2`, `1` |
+| Pull request | none: the image is only built, to check it still builds |
+| Manual (*Actions → Docker image → Run workflow*) | same as the branch or tag it runs on |
+
+**One-time setup:**
+
+1. On Docker Hub, go to *Account settings → Personal access tokens* and create a token with **Read & Write** access.
+2. In the GitHub repository, go to *Settings → Secrets and variables → Actions* and add a secret named
+   `DOCKERHUB_TOKEN` with that token.
+3. The first push creates the `m1v1n/pellet-pace` repository on Docker Hub. Check its visibility
+   (public or private) there. Range machines need `docker login` to pull a private image.
+
+**Making a release:**
+
+```sh
+git tag v1.2.0
+git push origin v1.2.0
+```
+
+Deployments can then pin it with `PELLET_PACE_TAG=1.2.0` (or `1.2`, or `1`) in `.env`.
+
+**Building locally:**
+
+```sh
+docker build -t m1v1n/pellet-pace:dev .               # your machine's architecture
+PELLET_PACE_TAG=dev docker compose up -d              # run it with the normal compose file
+docker buildx build --platform linux/amd64,linux/arm64 .   # check both architectures build
+```

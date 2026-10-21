@@ -1,7 +1,7 @@
 services:
   pellet-pace:
-    build: .
-    image: pellet-pace:latest
+    # Published by .github/workflows/docker.yml for amd64 and arm64. Set PELLET_PACE_TAG in .env to pin a version.
+    image: m1v1n/pellet-pace:${PELLET_PACE_TAG:-latest}
     container_name: pellet-pace
     restart: unless-stopped
     # Only needs changing when DATA_DIR is a host folder: set to that folder's owner (see .env).

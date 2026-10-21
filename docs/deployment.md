@@ -18,6 +18,8 @@ everything in one SQLite file. Phones and tablets on the range reach it over the
 - One machine on the same network as the shooters' devices (a range PC, a mini PC or a Raspberry Pi is enough).
 - **Docker** with Compose, **or** **Node.js 22.13 or later** (it needs the built-in `node:sqlite`).
 - **OpenSSL** on the `PATH` when the app creates its own certificate (the default). The Docker image includes it.
+- Internet access the first time and when updating, to pull the image from Docker Hub. After that the
+  range network can be offline.
 - A fixed LAN address for the machine. Reserve one in the router (DHCP reservation), because the certificate
   and the links people bookmark use that address.
 - Inbound TCP on the chosen port (default `3000`) allowed by the host firewall.
@@ -26,7 +28,7 @@ everything in one SQLite file. Phones and tablets on the range reach it over the
 
 ```sh
 cp .env.example .env          # set TLS_HOSTS (and optionally ADMIN_PASSWORD)
-docker compose up -d --build
+docker compose up -d          # pulls m1v1n/pellet-pace from Docker Hub
 docker compose logs           # first start: shows the admin username and password
 ```
 
@@ -36,7 +38,7 @@ What the Compose setup does:
 
 | Item | Value |
 | --- | --- |
-| Container / image | `pellet-pace` / `pellet-pace:latest`, built from the local `Dockerfile` (`node:22-alpine` + `openssl`) |
+| Container / image | `pellet-pace` / `m1v1n/pellet-pace:${PELLET_PACE_TAG:-latest}` from Docker Hub, for amd64 and arm64 (`node:22-alpine` + `openssl`) |
 | Port | `${HOST_PORT:-3000}` on the host → `3000` in the container |
 | Data | `/app/data` in the container (database `pellet-pace.db`, certificate in `tls/`) |
 | Data storage | Docker volume `pellet-pace-data`, or the host folder in `DATA_DIR` |
@@ -49,6 +51,7 @@ What the Compose setup does:
 | Variable | Needed? | Purpose |
 | --- | --- | --- |
 | `TLS_HOSTS` | **Yes** | Comma-separated IPs/hostnames devices use to reach this machine, e.g. `192.168.1.20,range-pc.local`. Inside a container the app can't see the host's LAN addresses, so it can't detect them. |
+| `PELLET_PACE_TAG` | No | Image version: `latest` (default, newest `main`), or a release such as `1.2.0` / `1.2` / `1`. |
 | `HOST_PORT` | No | Host port to publish (default `3000`). |
 | `ADMIN_USERNAME` / `ADMIN_PASSWORD` | No | Used **only** when the database has no admin yet. If the password is empty, a random one is printed in the logs. |
 | `DATA_DIR` | No | Host folder for the data instead of the named volume. Create the folder first. |
@@ -58,7 +61,7 @@ What the Compose setup does:
 ### Where the data lives
 
 The image holds only code. The database and certificate stay in the volume (or `DATA_DIR`), so they
-survive `docker compose up --build`, `docker compose down` and image rebuilds.
+survive `docker compose pull`, `docker compose down` and image updates.
 **`docker compose down -v` deletes the volume and all data.**
 
 The repository's own `./data` folder is used only by `npm start` and is never copied into the image
@@ -170,7 +173,7 @@ docker compose exec pellet-pace rm /app/data/backup.db
 
 ```sh
 docker compose stop
-docker run --rm --user root -v pellet-pace-data:/d -v "$PWD":/b pellet-pace tar czf /b/pellet-backup.tgz -C /d .
+docker run --rm --user root -v pellet-pace-data:/d -v "$PWD":/b m1v1n/pellet-pace tar czf /b/pellet-backup.tgz -C /d .
 docker compose start
 ```
 
@@ -185,7 +188,7 @@ first. Run the commands from the folder that contains the backup file, and chang
 
 ```sh
 docker compose stop
-docker run --rm --user root -v pellet-pace-data:/d -v "$PWD":/b pellet-pace sh -c \
+docker run --rm --user root -v pellet-pace-data:/d -v "$PWD":/b m1v1n/pellet-pace sh -c \
   'rm -f /d/pellet-pace.db-wal /d/pellet-pace.db-shm && cp /b/pellet-backup-2026-10-21.db /d/pellet-pace.db && chown node:node /d/pellet-pace.db'
 docker compose start
 ```
@@ -194,7 +197,7 @@ docker compose start
 
 ```sh
 docker compose stop
-docker run --rm --user root -v pellet-pace-data:/d -v "$PWD":/b pellet-pace sh -c \
+docker run --rm --user root -v pellet-pace-data:/d -v "$PWD":/b m1v1n/pellet-pace sh -c \
   'find /d -mindepth 1 -delete && tar xzf /b/pellet-backup.tgz -C /d && chown -R node:node /d'
 docker compose start
 ```
@@ -230,10 +233,17 @@ Create the `backups` folder first. In a crontab, `%` must be written as `\%`. Co
 
 ## Updating
 
+**Docker:**
+
 ```sh
-git pull
-docker compose up -d --build      # or restart the Node process
+docker compose pull               # newest image for PELLET_PACE_TAG
+docker compose up -d              # recreates the container; data is kept
 ```
+
+To go back to an earlier version, set `PELLET_PACE_TAG` to that release in `.env` and run the same two commands.
+Restore a backup made before the upgrade if the newer version changed the schema.
+
+**Node:** `git pull`, then restart the process.
 
 Schema changes are applied automatically on start (`PRAGMA user_version`). Take a backup first.
 Upgrading from the old laps version signs everyone out once and keeps admin and host accounts. The old
