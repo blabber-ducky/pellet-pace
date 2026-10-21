@@ -538,6 +538,19 @@ route('DELETE', /^\/api\/users\/(\d+)$/, (ctx) => {
   return { ok: true };
 });
 
+// Takes effect on the user's next request, since loadUser reads the role from the database each time.
+// Results and hosted events are kept; only what the user can do changes. Admins can't change their own
+// role, which also guarantees at least one admin remains.
+route('POST', /^\/api\/users\/(\d+)\/role$/, (ctx) => {
+  const admin = requireUser(ctx, 'admin');
+  const id = Number(ctx.params[0]);
+  if (id === admin.id) throw new HttpError(400, "You can't change your own role");
+  if (!['admin', 'host', 'shooter'].includes(ctx.body.role)) throw new HttpError(400, 'Role must be admin, host or shooter');
+  if (!db.prepare('SELECT 1 FROM users WHERE id = ?').get(id)) throw new HttpError(404, 'User not found');
+  db.prepare('UPDATE users SET role = ? WHERE id = ?').run(ctx.body.role, id);
+  return { ok: true };
+});
+
 // Sets a new password for someone who forgot theirs and signs them out everywhere.
 route('POST', /^\/api\/users\/(\d+)\/password$/, (ctx) => {
   const admin = requireUser(ctx, 'admin');

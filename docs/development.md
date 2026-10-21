@@ -131,6 +131,7 @@ with a 4xx status. Unexpected failures return 500 with a generic message, and th
 | `GET /users` | admin | — | `{ users }` |
 | `POST /users` | admin | `name`, `username`, `password`, `role` | `{ ok }` |
 | `DELETE /users/:id` | admin | — | `{ ok }`. An admin can't delete their own account. |
+| `POST /users/:id/role` | admin | `role` (`admin`/`host`/`shooter`) | `{ ok }`. 400 for your own account or an unknown role. Applies on the user's next request, because `loadUser` reads the role each time. Entries and hosted events are kept. |
 | `POST /users/:id/password` | admin | `password` | `{ ok }`. Sets the password and deletes all of that user's sessions. 400 for your own account (use `/me/password`). |
 | `GET /stats` | admin | — | `{ users, events, entries, shooters, staff }` (below) |
 
@@ -233,7 +234,7 @@ There is no automated test suite yet. Before committing, check by hand:
 3. Create an event, join it by code **and** by link (the link while signed out), and start it.
 4. Stop as the shooter, clear the time as the host, stop again, then end the event and check that DNF is shown.
 5. Check the shooter's **My events** history, **Export CSV** as the host, and the admin's **Users**
-   (including **Reset a password**) and **Stats** pages.
+   (including **Reset a password** and changing a role) and **Stats** pages.
 6. Check the layout at phone width in both light and dark mode.
 7. For Docker changes: build locally (`docker build -t m1v1n/pellet-pace:dev .`), run it with
    `PELLET_PACE_TAG=dev docker compose up -d`, check the health status in `docker compose ps`,

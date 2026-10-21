@@ -590,7 +590,8 @@ async function viewUsers() {
   mount(h('div', {},
     h('div', { class: 'page-head' },
       h('h1', {}, 'Users'),
-      h('p', { class: 'muted' }, 'Hosts run their own events. Admins see every event and manage users. Shooters can also sign themselves up.')),
+      h('p', { class: 'muted' }, 'Hosts run their own events. Admins see every event and manage users. Shooters can also sign themselves up. '
+        + 'Changing a role takes effect on that user’s next page load; their results and events are kept.')),
     h('div', { class: 'card' },
       h('h2', {}, 'Add a user'),
       h('form', {
@@ -614,12 +615,35 @@ async function viewUsers() {
         h('tbody', {}, users.map((u) => h('tr', {},
           h('td', {}, u.name, u.id === me.id ? h('span', { class: 'muted' }, ' (you)') : null),
           h('td', { class: 'muted' }, u.username),
-          h('td', {}, h('span', { class: 'chip chip-role' }, u.role)),
+          h('td', {}, u.id === me.id ? h('span', { class: 'chip chip-role' }, u.role) : roleSelect(u)),
           h('td', { class: 'actions' }, u.id === me.id ? null : confirmButton('Remove', 'Sure?', async () => {
             await api('DELETE', `/api/users/${u.id}`);
             toast(`Removed ${u.username}`);
             router();
           }))))))))));
+}
+
+// Saves as soon as a new role is picked; on failure the select goes back to the saved role.
+function roleSelect(user) {
+  let saved = user.role;
+  const select = h('select', {
+    class: 'select-sm',
+    'aria-label': `Role for ${user.username}`,
+    onchange: async () => {
+      select.disabled = true;
+      try {
+        await api('POST', `/api/users/${user.id}/role`, { role: select.value });
+        saved = select.value;
+        toast(`${user.name} is now ${saved === 'admin' ? 'an admin' : `a ${saved}`}`);
+      } catch (err) {
+        select.value = saved;
+        toast(err.message, true);
+      } finally {
+        select.disabled = false;
+      }
+    },
+  }, ['shooter', 'host', 'admin'].map((role) => h('option', { value: role, selected: role === saved }, role[0].toUpperCase() + role.slice(1))));
+  return select;
 }
 
 function resetPasswordForm(users) {

@@ -54,7 +54,7 @@ resumes from the shared start.
 
 ## Roles
 
-- **Admin** — everything a host can do, sees every event, manages users and resets passwords (Users page),
+- **Admin** — everything a host can do, sees every event, manages users, changes their roles and resets passwords (Users page),
   sees usage and shooter stats (Stats page).
 - **Host** — creates and runs their own events, exports results as CSV, sees all of their current and previous events.
 - **Shooter** — signs up themselves (or is added by an admin), joins events with an invite code,

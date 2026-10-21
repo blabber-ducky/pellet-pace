@@ -304,7 +304,7 @@ game data stays in the unused `games`, `players` and `runs` tables.
 
 ## Operations and troubleshooting
 
-**Lost admin password.** Any admin can reset another user's password on the **Users** page. If no
+**Lost admin password.** Any admin can reset another user's password, or make another account an admin, on the **Users** page. If no
 admin can sign in, set a new password directly:
 
 ```sh

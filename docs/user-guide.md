@@ -27,8 +27,8 @@ Tip: add the page to your home screen, or bookmark it, so you can find it next t
 | Role | Can do | How to get the account |
 | --- | --- | --- |
 | **Shooter** | Join events with an invite code, press STOP, see leaderboards for events they joined and their own history. | Sign up on the **Create an account** page, or ask an admin. |
-| **Host** | Create events, start and end them, clear a time, export results as CSV, delete their own events, see all their current and previous events. | An admin creates it. |
-| **Admin** | Everything a host can do for **every** event, plus add and remove users, reset passwords and view stats. | The first admin is created when the app is installed. Admins can create more. |
+| **Host** | Create events, start and end them, clear a time, export results as CSV, delete their own events, see all their current and previous events. | An admin creates it, or changes an existing account's role. |
+| **Admin** | Everything a host can do for **every** event, plus add and remove users, change roles, reset passwords and view stats. | The first admin is created when the app is installed. Admins can create more. |
 
 Only shooter accounts can join events as competitors. If a host wants to shoot too, they need a
 separate shooter account.
@@ -132,6 +132,16 @@ Admins also have the **Users** and **Stats** pages.
   - Removing a **shooter** deletes their results from **every** event's leaderboard.
   - Removing a **host** keeps their events. Only admins can manage those events afterwards.
   - You can't remove your own account.
+- **Change a role** with the drop-down in the **Role** column (**Shooter**, **Host** or **Admin**). It saves straight
+  away and applies on that user's next page load, with no need to sign in again. Nothing is deleted, so switching back
+  restores everything:
+  - A **shooter made host or admin** keeps their results on leaderboards, but can no longer join events, and their
+    **My events** history is hidden while they have a staff role.
+  - A **host made shooter** can no longer create or manage events. Their events stay, still showing them as host,
+    and admins can still run, end or delete them. If they had a live event, an admin will need to end it.
+  - A **new admin** gets the Users and Stats pages and every event.
+  - You can't change your own role. There is therefore always at least one admin. To step down, have another
+    admin change your role.
 - **Reset a password** for someone who forgot theirs. Open **Reset a password**, choose the user, enter a
   new temporary password (8+ characters) and tap **Reset password**. They're signed out on every device.
   Give them the new password and ask them to change it with **Change password**. Their results are kept.
