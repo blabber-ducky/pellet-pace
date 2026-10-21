@@ -186,6 +186,7 @@ async function router() {
     if (page === 'events') return isStaff() ? await viewEvents() : go('/home');
     if (page === 'event' && arg) return await viewEvent(Number(arg));
     if (page === 'users') return me.role === 'admin' ? await viewUsers() : go(homePath());
+    if (page === 'stats') return me.role === 'admin' ? await viewStats() : go(homePath());
     return go(homePath());
   } catch (err) {
     if (seq === routeSeq) app.replaceChildren(h('div', { class: 'card' }, h('p', { class: 'error' }, err.message)));
@@ -197,7 +198,10 @@ function renderTopbar() {
   if (me) {
     items.push(h('span', { class: 'who' }, me.name, ' ', h('span', { class: 'chip chip-role' }, me.role)));
     items.push(h('a', { class: 'btn btn-ghost btn-sm', href: isStaff() ? '#/events' : '#/home' }, isStaff() ? 'Events' : 'My events'));
-    if (me.role === 'admin') items.push(h('a', { class: 'btn btn-ghost btn-sm', href: '#/users' }, 'Users'));
+    if (me.role === 'admin') {
+      items.push(h('a', { class: 'btn btn-ghost btn-sm', href: '#/users' }, 'Users'));
+      items.push(h('a', { class: 'btn btn-ghost btn-sm', href: '#/stats' }, 'Stats'));
+    }
     items.push(h('button', {
       class: 'btn btn-ghost btn-sm',
       onclick: async () => { await api('POST', '/api/logout'); go('/login'); },
@@ -542,7 +546,9 @@ async function viewEvent(id) {
 
     const pendingTitle = event.status === 'running' ? 'Still shooting' : 'Did not finish';
     return h('div', { class: 'card' },
-      h('h2', {}, 'Leaderboard'),
+      h('div', { class: 'card-head' },
+        h('h2', {}, 'Leaderboard'),
+        data.canManage ? h('a', { class: 'btn btn-ghost btn-sm', href: `/api/events/${id}/results.csv`, download: true }, 'Export CSV') : null),
       table,
       pending.length ? h('div', { class: 'pending' },
         h('h3', {}, `${pendingTitle} (${pending.length})`),
@@ -601,6 +607,7 @@ async function viewUsers() {
       h('label', {}, 'Role', role),
       error,
       h('button', { class: 'btn btn-primary', type: 'submit' }, 'Add user'))),
+    resetPasswordForm(users),
     h('div', { class: 'card' },
       h('div', { class: 'table-wrap' }, h('table', { class: 'board' },
         h('thead', {}, h('tr', {}, h('th', {}, 'Name'), h('th', {}, 'Username'), h('th', {}, 'Role'), h('th', {}, ''))),
@@ -613,6 +620,81 @@ async function viewUsers() {
             toast(`Removed ${u.username}`);
             router();
           }))))))))));
+}
+
+function resetPasswordForm(users) {
+  const error = h('p', { class: 'error' });
+  const user = h('select', { name: 'user', required: true },
+    h('option', { value: '' }, 'Choose a user…'),
+    users.filter((u) => u.id !== me.id).map((u) => h('option', { value: u.id }, `${u.name} (${u.username})`)));
+  const password = h('input', { name: 'password', type: 'text', minlength: 8, autocomplete: 'off', required: true });
+  const form = h('form', {
+    class: 'stack',
+    onsubmit: formHandler(error, async () => {
+      const label = user.selectedOptions[0].textContent;
+      await api('POST', `/api/users/${user.value}/password`, { password: password.value });
+      form.reset();
+      toast(`New password set for ${label}`);
+    }),
+  },
+  h('p', { class: 'muted small' }, 'For someone who forgot their password. They’re signed out everywhere and use the new one to sign in.'),
+  h('label', {}, 'User', user),
+  h('label', {}, 'New temporary password (8+ characters)', password),
+  error,
+  h('button', { class: 'btn btn-primary', type: 'submit' }, 'Reset password'));
+  return h('div', { class: 'card' }, h('details', {}, h('summary', {}, 'Reset a password'), form));
+}
+
+// ---------- stats (admin) ----------
+
+const fmtDay = (ts) => (ts ? new Date(ts).toLocaleDateString(undefined, { dateStyle: 'medium' }) : '—');
+
+function statTile(label, value, sub) {
+  return h('div', { class: 'stat' },
+    h('div', { class: 'stat-label' }, label),
+    h('div', { class: 'stat-value' }, value),
+    sub ? h('div', { class: 'muted small' }, sub) : null);
+}
+
+async function viewStats() {
+  const mount = mounter();
+  const { users, events, entries, shooters, staff } = await api('GET', '/api/stats');
+  const num = (value) => h('td', { class: 'num' }, value);
+  const numHead = (label) => h('th', { class: 'num' }, label);
+  const finishRate = entries.in_finished_events
+    ? `${Math.round(100 * (1 - entries.dnf / entries.in_finished_events))}%`
+    : '—';
+
+  mount(h('div', {},
+    h('div', { class: 'page-head' },
+      h('h1', {}, 'Stats'),
+      h('p', { class: 'muted' }, 'Wins and podiums count finished events only.')),
+    h('div', { class: 'stat-grid' },
+      statTile('Users', users.admin + users.host + users.shooter, `${users.shooter} shooters · ${users.host} hosts · ${users.admin} admins`),
+      statTile('Events', events.waiting + events.running + events.finished, `${events.running} live · ${events.waiting} waiting · ${events.finished} finished`),
+      statTile('Entries', entries.total, `${entries.finished} times recorded`),
+      statTile('Finish rate', finishRate, `${entries.dnf} did not finish`)),
+    h('div', { class: 'card' },
+      h('h2', {}, 'Shooters'),
+      shooters.length
+        ? h('div', { class: 'table-wrap' }, h('table', { class: 'board' },
+          h('thead', {}, h('tr', {},
+            h('th', {}, 'Shooter'), numHead('Events'), numHead('Finished'), numHead('DNF'), numHead('Wins'), numHead('Podiums'), h('th', {}, 'Last event'))),
+          h('tbody', {}, shooters.map((u) => h('tr', {},
+            h('td', {}, u.name, h('div', { class: 'muted small' }, u.username)),
+            num(u.events), num(u.finished), num(u.dnf), num(u.wins), num(u.podiums),
+            h('td', { class: 'muted nowrap' }, fmtDay(u.last_event_at)))))))
+        : h('div', { class: 'empty' }, 'No shooters yet.')),
+    h('div', { class: 'card' },
+      h('h2', {}, 'Hosts and admins'),
+      h('div', { class: 'table-wrap' }, h('table', { class: 'board' },
+        h('thead', {}, h('tr', {},
+          h('th', {}, 'Name'), h('th', {}, 'Role'), numHead('Events'), numHead('Finished'), numHead('Entries'), h('th', {}, 'Last event'))),
+        h('tbody', {}, staff.map((u) => h('tr', {},
+          h('td', {}, u.name, h('div', { class: 'muted small' }, u.username)),
+          h('td', {}, h('span', { class: 'chip chip-role' }, u.role)),
+          num(u.events), num(u.finished), num(u.entries),
+          h('td', { class: 'muted nowrap' }, fmtDay(u.last_event_at))))))))));
 }
 
 window.addEventListener('hashchange', router);

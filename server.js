@@ -147,6 +147,13 @@ class HttpError extends Error {
   }
 }
 
+// Returned by a route handler to send a file download instead of JSON.
+class Download {
+  constructor(filename, contentType, body) {
+    Object.assign(this, { filename, contentType, body });
+  }
+}
+
 function parseCookies(req) {
   const out = {};
   for (const part of (req.headers.cookie || '').split(';')) {
@@ -306,6 +313,40 @@ function eventDetail(event, user, canManage) {
   };
 }
 
+// Same mm:ss.cc format as the app.
+function fmtMs(ms) {
+  const t = Math.max(0, Math.floor(ms / 10));
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${pad(Math.floor(t / 6000))}:${pad(Math.floor(t / 100) % 60)}.${pad(t % 100)}`;
+}
+
+function csvCell(value) {
+  const v = value == null ? '' : String(value);
+  return /[",\r\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v;
+}
+
+// Names are user-supplied: stop spreadsheets from running them as formulas.
+const csvText = (v) => (/^[=+\-@]/.test(v) ? `'${v}` : v);
+
+function resultsCsv(detail) {
+  const { event, results, pending } = detail;
+  const leader = results[0];
+  const pendingStatus = event.status === 'finished' ? 'Did not finish' : event.status === 'running' ? 'Still shooting' : 'Joined';
+  const rows = [
+    ['Rank', 'Shooter', 'Time', 'Time (ms)', 'Gap', 'Status'],
+    ...results.map((r) => [r.rank, csvText(r.name), fmtMs(r.ms), r.ms, r === leader ? '' : `+${fmtMs(r.ms - leader.ms)}`, 'Finished']),
+    ...pending.map((p) => ['', csvText(p.name), '', '', '', pendingStatus]),
+  ];
+  // The BOM makes Excel read the file as UTF-8.
+  return `﻿${rows.map((row) => row.map(csvCell).join(',')).join('\r\n')}\r\n`;
+}
+
+function csvFilename(event) {
+  const slug = event.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'event';
+  const date = new Date(event.started_at ?? event.created_at).toISOString().slice(0, 10);
+  return `${slug}-${date}.csv`;
+}
+
 // ---------- routes ----------
 
 const routes = [];
@@ -428,6 +469,11 @@ route('POST', /^\/api\/events\/(\d+)\/clear$/, (ctx) => {
   return eventDetail(event, ctx.user, true);
 });
 
+route('GET', /^\/api\/events\/(\d+)\/results\.csv$/, (ctx) => {
+  const event = loadManagedEvent(ctx, ctx.params[0]);
+  return new Download(csvFilename(event), 'text/csv; charset=utf-8', resultsCsv(eventDetail(event, ctx.user, true)));
+});
+
 route('DELETE', /^\/api\/events\/(\d+)$/, (ctx) => {
   const event = loadManagedEvent(ctx, ctx.params[0]);
   db.prepare('DELETE FROM events WHERE id = ?').run(event.id);
@@ -491,6 +537,65 @@ route('DELETE', /^\/api\/users\/(\d+)$/, (ctx) => {
   return { ok: true };
 });
 
+// Sets a new password for someone who forgot theirs and signs them out everywhere.
+route('POST', /^\/api\/users\/(\d+)\/password$/, (ctx) => {
+  const admin = requireUser(ctx, 'admin');
+  const id = Number(ctx.params[0]);
+  if (id === admin.id) throw new HttpError(400, 'Use “Change password” for your own account');
+  const password = newPassword(ctx.body.password);
+  if (!db.prepare('SELECT 1 FROM users WHERE id = ?').get(id)) throw new HttpError(404, 'User not found');
+  db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(hashPassword(password), id);
+  db.prepare('DELETE FROM sessions WHERE user_id = ?').run(id);
+  return { ok: true };
+});
+
+// Wins and podiums only count finished events, since ranks can still change while one is running.
+route('GET', /^\/api\/stats$/, (ctx) => {
+  requireUser(ctx, 'admin');
+  const countBy = (sql) => Object.fromEntries(db.prepare(sql).all().map((r) => [r.k, r.n]));
+  const entries = db.prepare(`
+    SELECT COUNT(*) AS total, COUNT(en.stopped_at) AS finished,
+           COUNT(CASE WHEN ev.status = 'finished' THEN 1 END) AS in_finished_events,
+           COUNT(CASE WHEN ev.status = 'finished' AND en.stopped_at IS NULL THEN 1 END) AS dnf
+    FROM entries en JOIN events ev ON ev.id = en.event_id
+  `).get();
+  return {
+    users: { admin: 0, host: 0, shooter: 0, ...countBy('SELECT role AS k, COUNT(*) AS n FROM users GROUP BY role') },
+    events: { waiting: 0, running: 0, finished: 0, ...countBy('SELECT status AS k, COUNT(*) AS n FROM events GROUP BY status') },
+    entries,
+    shooters: db.prepare(`
+      WITH ranked AS (
+        SELECT en.user_id, en.joined_at, en.stopped_at, ev.status,
+               CASE WHEN en.stopped_at IS NULL THEN NULL ELSE
+                 (SELECT COUNT(*) FROM entries x
+                  WHERE x.event_id = en.event_id AND x.stopped_at IS NOT NULL AND x.stopped_at < en.stopped_at) + 1
+               END AS rank
+        FROM entries en JOIN events ev ON ev.id = en.event_id
+      )
+      SELECT u.id, u.name, u.username, u.created_at,
+             COUNT(r.user_id) AS events,
+             COUNT(r.stopped_at) AS finished,
+             COUNT(CASE WHEN r.status = 'finished' AND r.stopped_at IS NULL THEN 1 END) AS dnf,
+             COUNT(CASE WHEN r.status = 'finished' AND r.rank = 1 THEN 1 END) AS wins,
+             COUNT(CASE WHEN r.status = 'finished' AND r.rank <= 3 THEN 1 END) AS podiums,
+             MAX(r.joined_at) AS last_event_at
+      FROM users u LEFT JOIN ranked r ON r.user_id = u.id
+      WHERE u.role = 'shooter'
+      GROUP BY u.id ORDER BY events DESC, u.name
+    `).all(),
+    staff: db.prepare(`
+      SELECT u.id, u.name, u.username, u.role,
+             COUNT(ev.id) AS events,
+             COUNT(CASE WHEN ev.status = 'finished' THEN 1 END) AS finished,
+             (SELECT COUNT(*) FROM entries x JOIN events e2 ON e2.id = x.event_id WHERE e2.host_id = u.id) AS entries,
+             MAX(ev.created_at) AS last_event_at
+      FROM users u LEFT JOIN events ev ON ev.host_id = u.id
+      WHERE u.role IN ('admin', 'host')
+      GROUP BY u.id ORDER BY events DESC, u.name
+    `).all(),
+  };
+});
+
 // ---------- server ----------
 
 const MIME = {
@@ -537,6 +642,15 @@ async function handleRequest(req, res) {
     ctx.body = await readJson(req);
     const result = await match.handler(ctx);
     if (ctx.cookies.length) res.setHeader('Set-Cookie', ctx.cookies);
+    if (result instanceof Download) {
+      res.writeHead(200, {
+        'Content-Type': result.contentType,
+        'Content-Disposition': `attachment; filename="${result.filename}"`,
+        'Cache-Control': 'no-store',
+      });
+      res.end(result.body);
+      return;
+    }
     res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
     res.end(JSON.stringify(result));
   } catch (err) {

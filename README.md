@@ -10,6 +10,13 @@ npm start                     # https://localhost:3000
 On first start an `admin` account is created and its password is printed to the console.
 Set `ADMIN_USERNAME` / `ADMIN_PASSWORD` beforehand to choose them yourself.
 
+## Documentation
+
+- [User guide](docs/user-guide.md): for shooters, hosts and admins
+- [Deployment guide](docs/deployment.md): Docker, Node/systemd, HTTPS, reverse proxy, backups, troubleshooting
+- [Development guide](docs/development.md): architecture, data model, API, conventions, testing
+- [AGENT.md](AGENT.md): standing instructions for AI agents and contributors
+
 ## Docker
 
 ```sh
@@ -45,8 +52,9 @@ resumes from the shared start.
 
 ## Roles
 
-- **Admin** — everything a host can do, sees every event, manages users (Users page).
-- **Host** — creates and runs their own events, sees all of their current and previous events.
+- **Admin** — everything a host can do, sees every event, manages users and resets passwords (Users page),
+  sees usage and shooter stats (Stats page).
+- **Host** — creates and runs their own events, exports results as CSV, sees all of their current and previous events.
 - **Shooter** — signs up themselves (or is added by an admin), joins events with an invite code,
   sees the live leaderboard for events they're in and their history of previous events.
 

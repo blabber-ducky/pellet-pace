@@ -292,6 +292,8 @@ table.board { width: 100%; border-collapse: collapse; }
 .board th { font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); }
 .board td.time { font-family: var(--mono); font-variant-numeric: tabular-nums; font-weight: 700; }
 .board td.actions { text-align: right; width: 1%; white-space: nowrap; }
+.board th.num, .board td.num { text-align: right; font-variant-numeric: tabular-nums; }
+.board td.nowrap { white-space: nowrap; }
 .board tr:last-child td { border-bottom: 0; }
 .board tr.is-me td { background: var(--done-soft); font-weight: 700; }
 .rank {
@@ -321,6 +323,22 @@ table.board { width: 100%; border-collapse: collapse; }
 .name-pill.is-me { border-color: var(--primary); outline: 2px solid var(--primary); outline-offset: 1px; }
 
 .empty { text-align: center; padding: 24px 12px; color: var(--muted); }
+
+.card-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }
+.card-head h2 { margin: 0; }
+
+/* ---------- stats ---------- */
+
+.stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; margin-bottom: 16px; }
+.stat {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 14px 16px;
+}
+.stat-label { font-size: 0.8rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); }
+.stat-value { font-size: 1.9rem; font-weight: 800; line-height: 1.2; font-variant-numeric: tabular-nums; }
 
 /* ---------- lists ---------- */
 
