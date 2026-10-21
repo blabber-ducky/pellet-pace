@@ -76,7 +76,8 @@ docs/                User, deployment and development docs
 7. **Server.** `/api/*` goes to the router. Other paths are static files from `public/` (GET/HEAD only, path-traversal
    checked). Every response sets `X-Content-Type-Options: nosniff` and `Referrer-Policy: same-origin`.
 8. **TLS.** `loadTls()` uses `TLS_CERT`/`TLS_KEY` (checked by `loadCustomTls()`: readable, PEM, key matches, logs the expiry)
-   or a self-signed certificate made with the `openssl` CLI.
+   or `TLS_DIR/cert.pem` + `key.pem`. Files there are only regenerated (with the `openssl` CLI) if the app made them itself
+   (self-issued, `CN=Pellet Pace`). An operator's certificate placed there goes through `loadCustomTls()` and is never overwritten.
    With HTTPS on, a raw `net` server checks the first byte of each connection. A TLS handshake (`0x16`)
    goes to the HTTPS server. Anything else goes to a server that answers with a 301 redirect to `https://`.
 

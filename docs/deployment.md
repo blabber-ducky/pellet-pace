@@ -118,7 +118,7 @@ All configuration is through environment variables. Nothing is read from a confi
 | `DB_PATH` | `data/pellet-pace.db` (Docker: `/app/data/pellet-pace.db`) | SQLite database file. Its folder is created if missing. |
 | `HTTPS` | on | `0` serves plain HTTP. Any other value or unset means HTTPS. |
 | `TLS_CERT` / `TLS_KEY` | unset | PEM certificate (chain) and unencrypted key to use instead of a self-signed one. Set both or neither. See [Using your own certificate](#using-your-own-certificate). |
-| `TLS_DIR` | `<folder of DB_PATH>/tls` | Where the self-signed `cert.pem` / `key.pem` are kept. |
+| `TLS_DIR` | `<folder of DB_PATH>/tls` | Where the self-signed `cert.pem` / `key.pem` are kept. Your own files placed here are used and never replaced. |
 | `TLS_HOSTS` | auto-detected | Names/IPs the self-signed certificate must cover (also the URLs printed at start-up). |
 | `COOKIE_SECURE` | unset | With `HTTPS=0`, set to `1` if a proxy serves the site over HTTPS. |
 | `ADMIN_USERNAME` | `admin` | Username of the admin created on first start. |
@@ -133,6 +133,8 @@ HTTPS is on by default, so session cookies are never sent in clear text over the
 address in `TLS_HOSTS` (or the detected ones). Every device shows a certificate warning the first
 time and after each regeneration. Users choose *Advanced → Proceed* (wording differs per browser).
 To avoid regenerations, keep the machine's IP fixed and set `TLS_HOSTS` explicitly.
+Only certificates the app generated itself (subject `CN=Pellet Pace`) are ever replaced. A certificate you put
+in `TLS_DIR` is kept, as described below. The log line `Created self-signed certificate … (reason)` says why one was made.
 
 ### Using your own certificate
 
@@ -178,11 +180,19 @@ You need two PEM files:
 **Renewing:** the files are read only at start-up. After replacing them, run `docker compose restart` (or restart
 the Node process). The log warns at start-up when the certificate expires within 14 days.
 
+**Alternative: replace the files in the data folder.** Instead of `TLS_CERT`/`TLS_KEY`, you can overwrite `cert.pem`
+(certificate or full chain) and `key.pem` in `TLS_DIR` (`/app/data/tls` in Docker, `data/tls` with `npm start`)
+and restart. The app sees that it didn't create them, checks them like `TLS_CERT`, and never replaces them,
+even when they don't cover `TLS_HOSTS` or are about to expire. Problems are reported with a
+`Certificate in …/tls:` message. To go back to self-signed, delete both files and restart.
+`TLS_CERT`/`TLS_KEY` are still the better choice with Docker, because the certificate stays out of the data volume
+and backups.
+
 **Going back to self-signed:** remove `TLS_CERT` and `TLS_KEY` from `.env` and run `docker compose up -d`.
 
 The certificate folder is always mounted, so Docker creates an empty `certs` folder if there isn't one. That's
 harmless: it's ignored by git and unused until `TLS_CERT`/`TLS_KEY` are set. If a certificate can't be loaded, the app
-exits with a `TLS_CERT / TLS_KEY:` message, and Docker keeps restarting it until you fix it. Check `docker compose logs`.
+exits with a `TLS_CERT / TLS_KEY:` (or `Certificate in …/tls:`) message, and Docker keeps restarting it until you fix it. Check `docker compose logs`.
 
 When `TLS_CERT`/`TLS_KEY` are set, `TLS_HOSTS` and `TLS_DIR` are not used for the certificate.
 The certificate must cover the name devices use, so the address you give out must be a name on the
@@ -324,6 +334,7 @@ from the Users page, it signs that user out everywhere.
 | --- | --- |
 | `Cannot open the database at …` on start | The data folder isn't writable by the process user. In Docker with `DATA_DIR`, set `PUID`/`PGID` to the folder's owner. |
 | `Could not create a self-signed certificate` | OpenSSL is missing. Install it, set `TLS_CERT`/`TLS_KEY`, or use `HTTPS=0`. |
+| A self-signed certificate is created although you set `TLS_CERT`/`TLS_KEY` | The variables are empty inside the container: the container wasn't recreated, the `.env` line is still commented out with `#`, or `.env` isn't next to the `docker-compose.yml` you run. Check with `docker compose config \| grep TLS_`, then run `docker compose up -d`. |
 | `TLS_CERT / TLS_KEY: Cannot read /certs/…` | The file isn't in the mounted folder. Check `TLS_CERT_DIR` and the file names, and don't point at symlinks into a folder that isn't mounted. |
 | `TLS_CERT / TLS_KEY: … is not readable by uid 1000` | `chown 1000:1000` the files (or your `PUID`), or make the certificate world-readable and `chmod 640` the key with a matching group. |
 | `TLS_CERT / TLS_KEY: … is not the key for …` | The key and certificate don't belong together. After a renewal, both files must come from the same renewal. |

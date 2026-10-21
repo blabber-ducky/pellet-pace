@@ -725,9 +725,9 @@ function certHosts() {
 }
 
 // Reads the operator's own certificate and key, failing with a readable message instead of a stack trace.
-function loadCustomTls(certFile, keyFile) {
+function loadCustomTls(certFile, keyFile, label = 'TLS_CERT / TLS_KEY') {
   const fail = (message) => {
-    console.error(`TLS_CERT / TLS_KEY: ${message}`);
+    console.error(`${label}: ${message}`);
     process.exit(1);
   };
   const read = (file) => {
@@ -764,8 +764,13 @@ function loadCustomTls(certFile, keyFile) {
   return { cert, key };
 }
 
-// Loads TLS_CERT/TLS_KEY if given, otherwise a self-signed certificate that is (re)generated with
-// OpenSSL whenever it is missing, about to expire, or doesn't cover the names from certHosts().
+// Subject of the certificates this app generates; how loadTls tells them apart from the operator's.
+const SELF_SIGNED_CN = 'Pellet Pace';
+let usingSelfSigned = false;
+
+// Loads TLS_CERT/TLS_KEY if given, otherwise TLS_DIR/cert.pem + key.pem: the operator's own certificate
+// if they put one there, or a self-signed one that is (re)generated with OpenSSL whenever it is
+// missing, about to expire, or doesn't cover the names from certHosts().
 function loadTls() {
   if (process.env.TLS_CERT || process.env.TLS_KEY) {
     if (!process.env.TLS_CERT || !process.env.TLS_KEY) {
@@ -778,14 +783,28 @@ function loadTls() {
   const certFile = path.join(TLS_DIR, 'cert.pem');
   const keyFile = path.join(TLS_DIR, 'key.pem');
   const hosts = certHosts();
+  let reason = 'none found';
 
-  if (existsSync(certFile) && existsSync(keyFile)) {
-    const cert = new crypto.X509Certificate(readFileSync(certFile));
-    const covered = new Set((cert.subjectAltName || '').split(', '));
-    const fresh = new Date(cert.validTo).getTime() > Date.now() + 7 * 24 * 3600 * 1000;
-    if (fresh && hosts.every(({ type, host }) => covered.has(type === 'IP' ? `IP Address:${host}` : `DNS:${host}`))) {
+  if (existsSync(certFile)) {
+    let existing = null;
+    try {
+      existing = new crypto.X509Certificate(readFileSync(certFile));
+    } catch { /* unreadable or not a certificate: treated as the operator's below */ }
+    // Only certificates this app generated are ever replaced. Anything else in TLS_DIR was put there by
+    // the operator, so it is used as-is (with the same checks as TLS_CERT) and never overwritten.
+    if (!existing || existing.subject !== `CN=${SELF_SIGNED_CN}` || existing.issuer !== existing.subject) {
+      return loadCustomTls(certFile, keyFile, `Certificate in ${TLS_DIR}`);
+    }
+    const covered = new Set((existing.subjectAltName || '').split(', '));
+    const missing = hosts.filter(({ type, host }) => !covered.has(type === 'IP' ? `IP Address:${host}` : `DNS:${host}`));
+    const fresh = new Date(existing.validTo).getTime() > Date.now() + 7 * 24 * 3600 * 1000;
+    if (fresh && !missing.length && existsSync(keyFile)) {
+      usingSelfSigned = true;
       return { cert: readFileSync(certFile), key: readFileSync(keyFile) };
     }
+    reason = !fresh ? 'the old one expires soon'
+      : missing.length ? `the old one doesn't cover ${missing.map(({ host }) => host).join(', ')}`
+        : 'its key is missing';
   }
 
   mkdirSync(TLS_DIR, { recursive: true });
@@ -793,7 +812,7 @@ function loadTls() {
   try {
     execFileSync('openssl', [
       'req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-sha256', '-days', '825',
-      '-subj', '/CN=Pellet Pace', '-addext', `subjectAltName=${san}`,
+      '-subj', `/CN=${SELF_SIGNED_CN}`, '-addext', `subjectAltName=${san}`,
       '-keyout', keyFile, '-out', certFile,
     ], { stdio: 'pipe' });
   } catch (err) {
@@ -804,7 +823,9 @@ function loadTls() {
     process.exit(1);
   }
   chmodSync(keyFile, 0o600);
-  console.log(`Created self-signed certificate in ${TLS_DIR} for ${san}`);
+  console.log(`Created self-signed certificate in ${TLS_DIR} for ${san} (${reason}). `
+    + 'To use your own, set TLS_CERT/TLS_KEY or replace cert.pem and key.pem there.');
+  usingSelfSigned = true;
   return { cert: readFileSync(certFile), key: readFileSync(keyFile) };
 }
 
@@ -843,7 +864,7 @@ if (USE_HTTPS) {
     socket.on('error', () => socket.destroy());
   }).listen(PORT, () => {
     printUrls('https');
-    if (!process.env.TLS_CERT) {
+    if (usingSelfSigned) {
       console.log('The certificate is self-signed, so browsers will show a warning the first time — choose to proceed.');
     }
   });
