@@ -1,0 +1,25 @@
+services:
+  pellet-pace:
+    build: .
+    image: pellet-pace:latest
+    container_name: pellet-pace
+    restart: unless-stopped
+    # Only needs changing when DATA_DIR is a host folder: set to that folder's owner (see .env).
+    user: "${PUID:-1000}:${PGID:-1000}"
+    ports:
+      - "${HOST_PORT:-3000}:3000"
+    environment:
+      # Hostnames/IPs tablets and phones use to reach this machine, for the HTTPS certificate.
+      TLS_HOSTS: ${TLS_HOSTS:-}
+      # Only used the first time, when the admin account is created.
+      ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
+      HTTPS: ${HTTPS:-1}
+    volumes:
+      # Deployment data (database + certificate). Defaults to the named volume below;
+      # set DATA_DIR to a host path (e.g. /srv/pellet-pace) to use a folder instead.
+      - ${DATA_DIR:-pellet-pace-data}:/app/data
+
+volumes:
+  pellet-pace-data:
+    name: pellet-pace-data

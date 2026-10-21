@@ -1,0 +1,13 @@
+{
+  "name": "pellet-pace",
+  "version": "1.0.0",
+  "description": "Lap timing and leaderboards for shooting ranges",
+  "type": "module",
+  "private": true,
+  "engines": {
+    "node": ">=22.13"
+  },
+  "scripts": {
+    "start": "node --no-warnings=ExperimentalWarning server.js"
+  }
+}
