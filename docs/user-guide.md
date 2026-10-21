@@ -22,6 +22,10 @@ leaderboard updates live.
 
 Tip: add the page to your home screen, or bookmark it, so you can find it next time.
 
+**Light or dark.** The button at the right of the top bar switches the colours: **◐ Auto** follows your phone's
+setting, while **☀ Light** and **☾ Dark** override it. Tap it to cycle through the three. Each device remembers its own choice.
+On a bright range, **Light** is usually easier to read.
+
 ## Accounts and roles
 
 | Role | Can do | How to get the account |

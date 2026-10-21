@@ -29,8 +29,9 @@
   color-scheme: light;
 }
 
+/* Dark theme: follows the device unless the viewer picked a theme (data-theme on <html>, set in app.js). */
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme="light"]) {
     --bg: #0d1218;
     --surface: #161e28;
     --surface-2: #1c2531;
@@ -50,6 +51,27 @@
     --shadow: none;
     color-scheme: dark;
   }
+}
+/* Same values as above, for viewers who picked Dark. Keep the two blocks in sync. */
+:root[data-theme="dark"] {
+  --bg: #0d1218;
+  --surface: #161e28;
+  --surface-2: #1c2531;
+  --border: #2d3a4a;
+  --text: #eef2f7;
+  --muted: #9ba7b7;
+  --primary: #3b74f0;
+  --primary-hover: #2f62d4;
+  --primary-text: #8db1ff;
+  --go-soft: #12301f;
+  --go-text: #4ade80;
+  --stop-soft: #3a1717;
+  --stop-text: #ff7a7a;
+  --done-soft: #172741;
+  --warn: #f0a648;
+  --warn-soft: #3a2a12;
+  --shadow: none;
+  color-scheme: dark;
 }
 
 * { box-sizing: border-box; }

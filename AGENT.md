@@ -45,7 +45,8 @@ Match the existing code. It is deliberately compact:
 - Client errors are `throw new HttpError(status, 'Message a user can read')`. The message is shown to users
   as-is, so write it in plain, friendly English.
 - Comments explain *why*, briefly. Don't comment the obvious.
-- CSS: use the custom properties in `:root` and give every new colour a dark-mode value.
+- CSS: use the custom properties in `:root` and give every new colour a dark-mode value, in **both** dark blocks
+  (the `prefers-color-scheme` one and `:root[data-theme="dark"]`).
 
 ## UX principles
 

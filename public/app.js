@@ -207,7 +207,48 @@ function renderTopbar() {
       onclick: async () => { await api('POST', '/api/logout'); go('/login'); },
     }, 'Sign out'));
   }
+  items.push(themeButton());
   topbarActions.replaceChildren(...items);
+}
+
+// ---------- theme ----------
+
+// 'auto' follows the device setting; a Light or Dark choice is remembered per browser.
+// index.html applies the remembered choice before the first paint.
+const THEMES = ['auto', 'light', 'dark'];
+const THEME_LABEL = { auto: '◐ Auto', light: '☀︎ Light', dark: '☾ Dark' };
+
+function currentTheme() {
+  try {
+    const theme = localStorage.getItem('pp_theme');
+    return THEMES.includes(theme) ? theme : 'auto';
+  } catch {
+    return 'auto';
+  }
+}
+
+function setTheme(theme) {
+  if (theme === 'auto') delete document.documentElement.dataset.theme;
+  else document.documentElement.dataset.theme = theme;
+  try {
+    if (theme === 'auto') localStorage.removeItem('pp_theme');
+    else localStorage.setItem('pp_theme', theme);
+  } catch { /* not remembered, but still applied for this visit */ }
+}
+
+function themeButton() {
+  const theme = document.documentElement.dataset.theme || 'auto';
+  const next = THEMES[(THEMES.indexOf(theme) + 1) % THEMES.length];
+  return h('button', {
+    type: 'button',
+    class: 'btn btn-ghost btn-sm',
+    title: 'Colour theme: Auto follows this device',
+    'aria-label': `Colour theme: ${theme}. Switch to ${next}.`,
+    onclick: () => {
+      setTheme(next);
+      renderTopbar();
+    },
+  }, THEME_LABEL[theme]);
 }
 
 // ---------- sign in / sign up ----------
@@ -748,5 +789,6 @@ async function viewStats() {
           h('td', { class: 'muted nowrap' }, fmtDay(u.last_event_at))))))))));
 }
 
+setTheme(currentTheme());
 window.addEventListener('hashchange', router);
 router();

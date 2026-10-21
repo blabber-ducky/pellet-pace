@@ -198,8 +198,12 @@ curl -sk -b jar $B/events
 - **Live clocks.** Any element with `data-start` is updated every 50 ms from `serverNow()`.
 - **`confirmButton`** is the two-tap pattern used for destructive or irreversible actions.
 - **`pendingCode`** keeps an invite code in `sessionStorage` while a signed-out user signs in.
-- **Styles.** Use the CSS custom properties in `:root`. Dark mode redefines them under
-  `@media (prefers-color-scheme: dark)`.
+- **Styles.** Use the CSS custom properties in `:root`. The dark theme redefines them twice:
+  under `@media (prefers-color-scheme: dark)` for `:root:not([data-theme="light"])` (Auto), and for
+  `:root[data-theme="dark"]` (chosen Dark). Keep both blocks identical.
+- **Theme.** The top-bar button cycles Auto → Light → Dark (`setTheme()` in `app.js`). It sets `data-theme` on `<html>`
+  and stores the choice in `localStorage` as `pp_theme` (removed for Auto). A one-line script in `index.html` applies a
+  stored choice before the first paint, so there's no flash of the other theme.
 
 ## Security notes
 
