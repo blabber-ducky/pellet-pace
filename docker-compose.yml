@@ -28,6 +28,15 @@ services:
       - ${DATA_DIR:-pellet-pace-data}:/app/data
       # Folder holding your own certificate and key, mounted read-only at /certs.
       - ${TLS_CERT_DIR:-./certs}:/certs:ro
+    # Hardening: the app only writes to /app/data (and /tmp), needs no Linux capabilities and never
+    # gains privileges, so lock all of that down.
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
     # Keep at most 3 x 10 MB of logs instead of letting them grow forever.
     logging:
       driver: json-file

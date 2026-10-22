@@ -16,7 +16,7 @@ range LAN, used from phones and tablets, often on weak Wi-Fi, by non-technical p
    (`node:http`, `node:sqlite`, `node:crypto`, …) on the server and plain browser APIs on the client.
    Don't add npm packages, CDNs, frameworks, bundlers, transpilers or TypeScript without the maintainer's explicit approval.
 2. **No build step.** Files in `public/` are served as written. `npm start` must keep working on a fresh clone.
-3. **Node 22.13+ only.** Don't use APIs newer than Node 22. `node:sqlite` is still experimental there, so
+3. **Node 22.13+ only.** The Docker image runs Node 24 LTS, but `npm start` must keep working on Node 22.13+, so don't use APIs newer than Node 22. `node:sqlite` is still experimental there, so
    keep the `--no-warnings=ExperimentalWarning` flag in `package.json` and the `Dockerfile`.
 4. **The server is the clock.** Every recorded event time (start, stop, end) comes from the server's `eventClock()`
    (monotonic). Use `Date.now()` only for calendar fields such as `created_at`. Never accept
@@ -77,6 +77,8 @@ Match the existing code. It is deliberately compact:
   no architecture-specific binaries or base images.
 - Keep the image name `m1v1n/pellet-pace` the same in the workflow, `docker-compose.yml` and the docs.
 - Never put Docker Hub credentials in the repository. The workflow reads the `DOCKERHUB_TOKEN` secret.
+- The container runs hardened (read-only root, no capabilities, `no-new-privileges`). The app may only write to
+  `/app/data` and `/tmp`, and must not need extra Linux capabilities. Keep it that way, or update `docker-compose.yml` and the docs.
 
 ## Keep docs in sync
 

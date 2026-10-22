@@ -1,4 +1,5 @@
-FROM node:22-alpine
+# Node 24 LTS. The app itself still runs on Node 22.13+ (package.json engines).
+FROM node:24-alpine
 
 # OpenSSL creates the self-signed certificate on first start; tzdata provides the TZ timezones.
 RUN apk add --no-cache openssl tzdata
@@ -19,7 +20,9 @@ USER node
 
 EXPOSE 3000
 
+# BusyBox wget instead of starting Node every 30 s. It checks only that the app answers, so certificate
+# checks are off: neither the self-signed certificate nor your own one covers 127.0.0.1.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-  CMD node -e "const m=require(process.env.HTTPS==='0'?'http':'https');m.get({host:'127.0.0.1',port:process.env.PORT,path:'/api/me',rejectUnauthorized:false},r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"
+  CMD wget -q --no-check-certificate -O /dev/null "$([ "$HTTPS" = 0 ] && echo http || echo https)://127.0.0.1:${PORT}/api/me" || exit 1
 
 CMD ["node", "--no-warnings=ExperimentalWarning", "server.js"]

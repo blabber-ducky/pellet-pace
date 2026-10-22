@@ -17,7 +17,7 @@ everything in one SQLite file. Phones and tablets on the range reach it over the
 ## Requirements
 
 - One machine on the same network as the shooters' devices (a range PC, a mini PC or a Raspberry Pi is enough).
-- **Docker** with Compose, **or** **Node.js 22.13 or later** (it needs the built-in `node:sqlite`).
+- **Docker** with Compose (the image uses Node 24 LTS), **or** **Node.js 22.13 or later** (it needs the built-in `node:sqlite`).
 - **OpenSSL** on the `PATH` when the app creates its own certificate (the default). The Docker image includes it.
 - Internet access the first time and when updating, to pull the image from Docker Hub. After that the
   range network can be offline.
@@ -39,13 +39,14 @@ What the Compose setup does:
 
 | Item | Value |
 | --- | --- |
-| Container / image | `pellet-pace` / `m1v1n/pellet-pace:${PELLET_PACE_TAG:-latest}` from Docker Hub, for amd64 and arm64 (`node:22-alpine` + `openssl`) |
+| Container / image | `pellet-pace` / `m1v1n/pellet-pace:${PELLET_PACE_TAG:-latest}` from Docker Hub, for amd64 and arm64 (`node:24-alpine` + `openssl` + `tzdata`) |
 | Port | `${HOST_PORT:-3000}` on the host → `3000` in the container |
 | Data | `/app/data` in the container (database `pellet-pace.db`, certificate in `tls/`) |
 | Data storage | Docker volume `pellet-pace-data`, or the host folder in `DATA_DIR` |
 | User | Runs as the unprivileged `node` user, or `PUID:PGID` from `.env` |
 | Restart | `unless-stopped`, so it comes back after a reboot |
-| Health check | `GET /api/me` every 30 s |
+| Health check | `GET /api/me` every 30 s with BusyBox `wget` (it doesn't check the certificate, because it only tests that the app answers) |
+| Hardening | Read-only root filesystem (only `/app/data` and a `/tmp` tmpfs are writable), all Linux capabilities dropped, `no-new-privileges` |
 | Logs | Rotated by Docker: at most 3 × 10 MB |
 | Timezone | `Asia/Dubai` (set in the image; change with `TZ`) |
 

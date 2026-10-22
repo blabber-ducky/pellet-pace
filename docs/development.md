@@ -38,7 +38,7 @@ public/index.html    Page shell (top bar, #app, toast)
 public/app.js        Entire front end: hash router, views, live updates, helpers
 public/styles.css    Styles, light and dark themes via CSS custom properties
 public/icon.svg      Logo and favicon
-Dockerfile           node:22-alpine + openssl, runs as `node`, data in /app/data
+Dockerfile           node:24-alpine + openssl + tzdata, runs as `node`, data in /app/data
 docker-compose.yml   Deployment from the Docker Hub image, driven by .env (see .env.example)
 .github/workflows/   docker.yml: builds amd64 + arm64 images and pushes them to Docker Hub
 docs/                User, deployment and development docs
