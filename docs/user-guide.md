@@ -154,7 +154,7 @@ Admins also have the **Users** and **Stats** pages.
 
 - **Add a user.** Enter name, username, a temporary password (8+ characters) and role (**Host**, **Admin** or
   **Shooter**). Give them the password and ask them to change it with **Change password**.
-- **Remove a user** (two taps). Be careful:
+- **Remove a user** (two taps). Other admins can't be removed here. Be careful:
   - Removing a **shooter** deletes their results from **every** event's leaderboard.
   - Removing a **host** keeps their events. Only admins can manage those events afterwards.
   - You can't remove your own account.
@@ -165,11 +165,14 @@ Admins also have the **Users** and **Stats** pages.
     They now also get the Events page and its host features.
   - A **host made shooter** can no longer create or manage events. Their events stay, still showing them as host,
     and admins can still run, end or delete them. If they had a live event, an admin will need to end it.
-  - A **new admin** gets the Users and Stats pages and every event.
-  - You can't change your own role. There is therefore always at least one admin. To step down, have another
-    admin change your role.
+  - A **new admin** gets the Users and Stats pages and every event. The app asks you to confirm first, because
+    **an admin's role can't be changed from the app**, neither by another admin nor by themselves. Admins therefore can't
+    demote each other, and there is always at least one admin. Their row shows a plain **admin** badge instead of a drop-down.
+  - To demote an admin, ask whoever runs the server (see the
+    [deployment guide](deployment.md#operations-and-troubleshooting)).
 - **Reset a password** for someone who forgot theirs. Open **Reset a password**, choose the user, enter a
   new temporary password (8+ characters) and tap **Reset password**. They're signed out on every device.
+  Admins aren't in this list: another admin's password can only be reset on the server.
   Give them the new password and ask them to change it with **Change password**. Their results are kept.
   You can't reset your own password here: use **Change password**. If the only admin has forgotten their
   password, whoever runs the server can reset it (see the
@@ -194,8 +197,12 @@ The **Stats** page gives an overview of the whole range:
 - A shooter's time is **STOP moment − shared start**, shown as `mm:ss.cc` (minutes, seconds, hundredths).
 - The stop moment is when the server **receives** the STOP press. On a busy or weak Wi-Fi this
   can add a fraction of a second, so good Wi-Fi coverage on the line matters.
-- Screens check for updates about every 1.5 seconds. After the host taps start, a shooter's clock can
-  appear up to about a second later, but it already counts from the true start.
+- Screens update **instantly**: the start, every STOP and the end appear on all devices within a fraction of a
+  second. The clock always counts from the true shared start.
+- While you're taking part, the app keeps your screen from turning off (on browsers that support it, and not
+  in battery-saver mode).
+- Events left running are **ended automatically after 24 hours** (shooters who hadn't stopped are marked
+  *did not finish*). Whoever runs the server can change or turn off this limit.
 - **Ties** (identical times to the millisecond) share a rank.
 
 ## FAQ
@@ -210,4 +217,8 @@ is still running and you can still press STOP.
 **Why does my browser warn about the site?** The range uses a self-signed certificate. The connection
 is still encrypted. See [Getting connected](#getting-connected).
 
-**I was signed out.** Sign-ins last 14 days.
+**I was signed out.** Sign-ins last 14 days. After some app updates everyone has to sign in again once.
+
+**Where are the menu buttons on my phone?** On narrow screens they're under **☰ Menu** in the top bar.
+
+**I only see 20 events.** Long lists show the newest 20. Tap **Show more** at the bottom for older ones.

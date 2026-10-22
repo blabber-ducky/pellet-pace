@@ -18,10 +18,11 @@ range LAN, used from phones and tablets, often on weak Wi-Fi, by non-technical p
 2. **No build step.** Files in `public/` are served as written. `npm start` must keep working on a fresh clone.
 3. **Node 22.13+ only.** Don't use APIs newer than Node 22. `node:sqlite` is still experimental there, so
    keep the `--no-warnings=ExperimentalWarning` flag in `package.json` and the `Dockerfile`.
-4. **The server is the clock.** Every recorded time comes from server `Date.now()`. Never accept
+4. **The server is the clock.** Every recorded event time (start, stop, end) comes from the server's `eventClock()`
+   (monotonic). Use `Date.now()` only for calendar fields such as `created_at`. Never accept
    timestamps, durations or results from the client. Live client clocks must use `serverNow()`.
 5. **Never break existing databases.** Schema changes go in a new `user_version` migration step (see
-   "Change the schema" in docs/development.md). Don't edit the existing version-2 migration, and never drop user data.
+   "Change the schema" in docs/development.md). Don't edit existing migration steps (versions 2 and 3), and never drop user data.
    The legacy `games`/`players`/`runs` tables are deliberately left in place.
 6. **Authorise on the server.** Every new route starts with `requireUser(...)` or
    `loadEvent`/`loadManagedEvent`. Return 404 for events the user can't see.
@@ -29,9 +30,13 @@ range LAN, used from phones and tablets, often on weak Wi-Fi, by non-technical p
    (join, STOP, results history) on having an entry, never on `role === 'shooter'`. Gate managing on `canManage`.
 7. **Keep CSRF protection.** State-changing requests require `Content-Type: application/json` (`readJson`).
    Don't add form-encoded endpoints, CORS headers or state-changing GETs.
-8. **No HTML injection.** Build DOM with `h()`. Never put user data into `innerHTML`, `outerHTML`,
+8. **Keep the Content Security Policy working.** No inline `style` attributes (use classes), no new inline scripts,
+   no third-party URLs. The theme snippet in `index.html` is the only inline script, and its hash is computed at start-up.
+9. **Push every change.** Any route that writes to `events` or `entries` calls `notify(eventId)`. User changes call
+   `notifyAll()`. Otherwise open screens go stale until the 15 s fallback poll.
+10. **No HTML injection.** Build DOM with `h()`. Never put user data into `innerHTML`, `outerHTML`,
    `insertAdjacentHTML` or `document.write`.
-9. **Secrets stay out of git.** Never commit `.env`, `data/`, databases, certificates or keys.
+11. **Secrets stay out of git.** Never commit `.env`, `data/`, databases, certificates or keys.
 
 ## Code style
 

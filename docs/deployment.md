@@ -46,6 +46,8 @@ What the Compose setup does:
 | User | Runs as the unprivileged `node` user, or `PUID:PGID` from `.env` |
 | Restart | `unless-stopped`, so it comes back after a reboot |
 | Health check | `GET /api/me` every 30 s |
+| Logs | Rotated by Docker: at most 3 × 10 MB |
+| Timezone | `Asia/Dubai` (set in the image; change with `TZ`) |
 
 ### `.env` settings
 
@@ -53,6 +55,8 @@ What the Compose setup does:
 | --- | --- | --- |
 | `TLS_HOSTS` | **Yes** | Comma-separated IPs/hostnames devices use to reach this machine, e.g. `192.168.1.20,range-pc.local`. Inside a container the app can't see the host's LAN addresses, so it can't detect them. |
 | `PELLET_PACE_TAG` | No | Image version: `latest` (default, newest `main`), or a release such as `1.2.0` / `1.2` / `1`. |
+| `TZ` | No | Server timezone (default `Asia/Dubai`): CSV file names, logs, automatic event ends. |
+| `AUTO_FINISH_HOURS` | No | End events left running this many hours (default `24`, `0` = never). |
 | `HOST_PORT` | No | Host port to publish (default `3000`). |
 | `ADMIN_USERNAME` / `ADMIN_PASSWORD` | No | Used **only** when the database has no admin yet. If the password is empty, a random one is printed in the logs. |
 | `DATA_DIR` | No | Host folder for the data instead of the named volume. Create the folder first. |
@@ -121,6 +125,8 @@ All configuration is through environment variables. Nothing is read from a confi
 | `TLS_DIR` | `<folder of DB_PATH>/tls` | Where the self-signed `cert.pem` / `key.pem` are kept. Your own files placed here are used and never replaced. |
 | `TLS_HOSTS` | auto-detected | Names/IPs the self-signed certificate must cover (also the URLs printed at start-up). |
 | `COOKIE_SECURE` | unset | With `HTTPS=0`, set to `1` if a proxy serves the site over HTTPS. |
+| `TZ` | `Asia/Dubai` in Docker, the system's otherwise | Timezone for server-side dates (CSV file names, logs, automatic ends). |
+| `AUTO_FINISH_HOURS` | `24` | End events left running longer than this. `0` turns it off. |
 | `ADMIN_USERNAME` | `admin` | Username of the admin created on first start. |
 | `ADMIN_PASSWORD` | random | Password of the admin created on first start. |
 
@@ -212,7 +218,10 @@ Things to know:
 - The app does not read `X-Forwarded-For`. The sign-in rate limit (10 failures per IP in 15 minutes)
   therefore sees **every user as the proxy's IP**. A few mistyped passwords can lock out sign-in for
   everyone for 15 minutes. Add rate limiting at the proxy, or run without a proxy on a trusted LAN.
-- No WebSockets are used, so a plain HTTP proxy is enough. Clients poll every 1.5 seconds.
+- Live updates use **Server-Sent Events** (`/api/events/:id/stream`): long-lived plain HTTP responses, no WebSockets.
+  The proxy must not buffer them and must allow idle reads of more than 25 s (the app sends a keep-alive every 25 s).
+  The app sends `X-Accel-Buffering: no`, which nginx honours. Otherwise set `proxy_buffering off;` and
+  `proxy_read_timeout 1h;` for `/api/`. Caddy and Traefik stream them without extra settings.
 - Serve the app at the root path (`/`). The front end calls `/api/...` with absolute paths.
 
 ## Backups and restore
@@ -330,6 +339,20 @@ console.log(r.changes ? 'Password updated' : 'No such user');" admin 'new-passwo
 Without Docker, run the same `node -e` command from the project folder with `DB_PATH` set. Like a reset
 from the Users page, it signs that user out everywhere.
 
+**Demoting or removing an admin.** Admins can't change, remove or reset the password of an admin in the app (theirs or
+another's), so this is done on the server. To demote: Replace `sam` with the username and `host` with the new role (`host` or `shooter`):
+
+```sh
+docker compose exec pellet-pace node --no-warnings -e "
+const r = new (require('node:sqlite').DatabaseSync)(process.env.DB_PATH)
+  .prepare('UPDATE users SET role = ? WHERE username = ?').run(process.argv[2], process.argv[1]);
+console.log(r.changes ? 'Updated ' + process.argv[1] : 'No such user');" sam host
+```
+
+Keep at least one admin. The change applies on that user's next page load. To remove an admin account
+completely, demote it first and then remove it on the Users page. Their results are removed with it, just as for any user.
+To reset another admin's password, use the "Lost admin password" command above.
+
 | Symptom | Cause / fix |
 | --- | --- |
 | `Cannot open the database at …` on start | The data folder isn't writable by the process user. In Docker with `DATA_DIR`, set `PUID`/`PGID` to the folder's owner. |
@@ -345,7 +368,9 @@ from the Users page, it signs that user out everywhere.
 | Devices can't connect, but `localhost` works | Firewall, wrong IP, or devices on a guest/isolated Wi-Fi network. |
 | "Too many attempts" for everyone | Sign-in rate limit, often behind a proxy (see above). It clears after 15 minutes or on restart. |
 | No admin password in the logs | The database already had an admin, and the password is printed only once. Use the reset above. |
-| Everyone signed out | Sessions last 14 days. They are also cleared by the upgrade from the laps version. |
+| Everyone signed out | Sessions last 14 days. They are also cleared once by the upgrade from the laps version, and once by the upgrade that started storing them hashed (schema version 3). |
+| An event ended by itself | It had been running for more than `AUTO_FINISH_HOURS` (default 24). The log says `Ended event "…" automatically`. Set `AUTO_FINISH_HOURS=0` to turn this off. |
+| Times in the app don't match local time | Browsers show times in each device's own timezone. `TZ` (default `Asia/Dubai`) only affects server-side dates: CSV file names, logs and automatic ends. |
 
 **Logs.** The app logs to stdout/stderr: start-up URLs, certificate creation, the first-start admin password,
 and stack traces for unexpected (500) errors. In Docker: `docker compose logs -f`.

@@ -7,8 +7,10 @@ import crypto from 'node:crypto';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { chmodSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
-import { readFile } from 'node:fs/promises';
+import { readFile, stat } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
+import { promisify } from 'node:util';
+import { gzipSync } from 'node:zlib';
 import { DatabaseSync } from 'node:sqlite';
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
@@ -25,7 +27,16 @@ const SECURE_COOKIES = USE_HTTPS || process.env.COOKIE_SECURE === '1';
 
 const SESSION_TTL = 14 * 24 * 3600 * 1000;
 const CODE_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
-const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 3;
+// Running events older than this are ended automatically (0 turns it off).
+const AUTO_FINISH_HOURS = Number(process.env.AUTO_FINISH_HOURS ?? 24);
+const PAGE_SIZE = 20;
+
+// Event times (start, stop, end) come from a monotonic clock anchored to the wall clock at start-up, so a
+// clock change or NTP step during an event can't shift anyone's result. Calendar fields (created_at,
+// joined_at) still use Date.now().
+const CLOCK_ANCHOR = Date.now() - performance.now();
+const eventClock = () => Math.round(CLOCK_ANCHOR + performance.now());
 
 // ---------- database ----------
 
@@ -45,7 +56,7 @@ try {
 
 // Version 1 (games/laps, shooters without accounts) is replaced by version 2 (events, shooter accounts).
 // Staff accounts carry over; old game data is left in its tables but no longer used.
-if (db.prepare('PRAGMA user_version').get().user_version < SCHEMA_VERSION) {
+if (db.prepare('PRAGMA user_version').get().user_version < 2) {
   db.exec('PRAGMA foreign_keys = OFF; BEGIN;');
   try {
     const hadUsers = db.prepare(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'users'`).get();
@@ -96,7 +107,7 @@ if (db.prepare('PRAGMA user_version').get().user_version < SCHEMA_VERSION) {
       );
       CREATE INDEX entries_by_user ON entries (user_id);
 
-      PRAGMA user_version = ${SCHEMA_VERSION};
+      PRAGMA user_version = 2;
       COMMIT;
     `);
   } catch (err) {
@@ -106,29 +117,46 @@ if (db.prepare('PRAGMA user_version').get().user_version < SCHEMA_VERSION) {
     db.exec('PRAGMA foreign_keys = ON;');
   }
 }
+
+// Version 3 stores session tokens as SHA-256 hashes, so a copy of the database can't be used to sign in.
+// The old plain-text sessions are dropped, which signs everyone out once.
+if (db.prepare('PRAGMA user_version').get().user_version < SCHEMA_VERSION) {
+  db.exec(`
+    BEGIN;
+    DELETE FROM sessions;
+    CREATE INDEX IF NOT EXISTS sessions_by_user ON sessions (user_id);
+    PRAGMA user_version = ${SCHEMA_VERSION};
+    COMMIT;
+  `);
+}
 db.exec('PRAGMA foreign_keys = ON;');
 
-function hashPassword(password) {
+// Asynchronous, so hashing a password (tens of milliseconds) doesn't stall every other request.
+const scrypt = promisify(crypto.scrypt);
+
+async function hashPassword(password) {
   const salt = crypto.randomBytes(16);
-  const hash = crypto.scryptSync(password, salt, 64);
+  const hash = await scrypt(password, salt, 64);
   return `${salt.toString('hex')}:${hash.toString('hex')}`;
 }
 
-function verifyPassword(password, stored) {
+async function verifyPassword(password, stored) {
   const [saltHex, hashHex] = stored.split(':');
-  const hash = crypto.scryptSync(password, Buffer.from(saltHex, 'hex'), 64);
+  const hash = await scrypt(password, Buffer.from(saltHex, 'hex'), 64);
   return crypto.timingSafeEqual(hash, Buffer.from(hashHex, 'hex'));
 }
+
+// Checked instead when a username doesn't exist, so a wrong username takes as long as a wrong password
+// and response times don't reveal which usernames exist.
+const DUMMY_PASSWORD_HASH = await hashPassword(crypto.randomBytes(16).toString('hex'));
 
 if (!db.prepare(`SELECT 1 FROM users WHERE role = 'admin'`).get()) {
   const username = process.env.ADMIN_USERNAME || 'admin';
   const password = process.env.ADMIN_PASSWORD || crypto.randomBytes(9).toString('base64url');
   db.prepare('INSERT INTO users (username, name, password_hash, role, created_at) VALUES (?, ?, ?, ?, ?)')
-    .run(username, 'Admin', hashPassword(password), 'admin', Date.now());
+    .run(username, 'Admin', await hashPassword(password), 'admin', Date.now());
   console.log(`Created admin account -> username: ${username}  password: ${password}`);
 }
-
-db.prepare('DELETE FROM sessions WHERE created_at < ?').run(Date.now() - SESSION_TTL);
 
 function newInviteCode() {
   const exists = db.prepare('SELECT 1 FROM events WHERE invite_code = ?');
@@ -152,6 +180,13 @@ class HttpError extends Error {
 class Download {
   constructor(filename, contentType, body) {
     Object.assign(this, { filename, contentType, body });
+  }
+}
+
+// Returned by a route handler to keep the response open as a live update stream (see "live updates").
+class EventStream {
+  constructor(eventId, userId) {
+    Object.assign(this, { eventId, userId });
   }
 }
 
@@ -211,25 +246,35 @@ function newPassword(value) {
   return v;
 }
 
-// Simple in-memory brute-force guard for login and sign-up.
+// Simple in-memory brute-force guard for login and sign-up: 10 failures per IP per 15 minutes.
+const AUTH_WINDOW = 15 * 60 * 1000;
 const authFailures = new Map();
 function checkAuthRate(ip) {
   const entry = authFailures.get(ip);
-  if (entry && entry.count >= 10 && Date.now() - entry.first < 15 * 60 * 1000) {
+  if (entry && entry.count >= 10 && Date.now() - entry.first < AUTH_WINDOW) {
     throw new HttpError(429, 'Too many attempts. Try again in a few minutes.');
   }
 }
 function recordAuthFailure(ip) {
   const entry = authFailures.get(ip);
-  if (!entry || Date.now() - entry.first > 15 * 60 * 1000) authFailures.set(ip, { count: 1, first: Date.now() });
+  if (!entry || Date.now() - entry.first > AUTH_WINDOW) authFailures.set(ip, { count: 1, first: Date.now() });
   else entry.count++;
+}
+// Called periodically so the map doesn't keep every IP that ever failed.
+function pruneAuthFailures() {
+  for (const [ip, entry] of authFailures) {
+    if (Date.now() - entry.first > AUTH_WINDOW) authFailures.delete(ip);
+  }
 }
 
 // ---------- sessions ----------
 
+// Only a hash of each session token is stored; the token itself exists only in the browser's cookie.
+const tokenHash = (token) => crypto.createHash('sha256').update(token).digest('hex');
+
 function startSession(ctx, userId) {
   const token = crypto.randomBytes(32).toString('base64url');
-  db.prepare('INSERT INTO sessions (token, user_id, created_at) VALUES (?, ?, ?)').run(token, userId, Date.now());
+  db.prepare('INSERT INTO sessions (token, user_id, created_at) VALUES (?, ?, ?)').run(tokenHash(token), userId, Date.now());
   ctx.cookies.push(cookie('pp_session', token, SESSION_TTL));
 }
 
@@ -238,7 +283,7 @@ function loadUser(cookies) {
   return db.prepare(`
     SELECT u.id, u.username, u.name, u.role FROM sessions s JOIN users u ON u.id = s.user_id
     WHERE s.token = ? AND s.created_at > ?
-  `).get(cookies.pp_session, Date.now() - SESSION_TTL) || null;
+  `).get(tokenHash(cookies.pp_session), Date.now() - SESSION_TTL) || null;
 }
 
 function requireUser(ctx, ...roles) {
@@ -251,13 +296,18 @@ const isStaff = (user) => user.role === 'admin' || user.role === 'host';
 
 // Hosts manage their own events, admins manage all; anyone may view events they entered
 // (shooters, and hosts shooting in their own event).
+function eventAccess(event, user) {
+  const canManage = user.role === 'admin' || (user.role === 'host' && event.host_id === user.id);
+  const entry = db.prepare('SELECT * FROM entries WHERE event_id = ? AND user_id = ?').get(event.id, user.id) || null;
+  return { canManage, entry, canView: canManage || Boolean(entry) };
+}
+
 function loadEvent(ctx, id) {
   const user = requireUser(ctx);
   const event = db.prepare('SELECT * FROM events WHERE id = ?').get(Number(id));
   if (!event) throw new HttpError(404, 'Event not found');
-  const canManage = user.role === 'admin' || (user.role === 'host' && event.host_id === user.id);
-  const entry = db.prepare('SELECT * FROM entries WHERE event_id = ? AND user_id = ?').get(event.id, user.id) || null;
-  if (!canManage && !entry) throw new HttpError(404, 'Event not found');
+  const { canManage, entry, canView } = eventAccess(event, user);
+  if (!canView) throw new HttpError(404, 'Event not found');
   return { event, canManage, entry };
 }
 
@@ -312,7 +362,7 @@ function eventDetail(event, user, canManage) {
     results,
     pending,
     me: entered ? { user_id: user.id, stopped: Boolean(mine), ms: mine?.ms ?? null, rank: mine?.rank ?? null } : null,
-    now: Date.now(),
+    now: eventClock(),
   };
 }
 
@@ -346,9 +396,72 @@ function resultsCsv(detail) {
 
 function csvFilename(event) {
   const slug = event.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'event';
-  const date = new Date(event.started_at ?? event.created_at).toISOString().slice(0, 10);
+  // en-CA formats as YYYY-MM-DD; the date is in the server's timezone (TZ).
+  const date = new Intl.DateTimeFormat('en-CA').format(new Date(event.started_at ?? event.created_at));
   return `${slug}-${date}.csv`;
 }
+
+// ---------- live updates ----------
+
+// Everyone viewing an event keeps one Server-Sent Events stream open. After anything that changes the
+// event, each subscriber is sent its own view of it (the payload differs per user), so screens update
+// at once instead of polling.
+const subscribers = new Map(); // event id -> Set of { res, userId }
+
+function sendEvent(res, data, type) {
+  res.write(`${type ? `event: ${type}\n` : ''}data: ${JSON.stringify(data)}\n\n`);
+}
+
+// The view `userId` currently has of the event, or null if it's gone or they lost access.
+function viewFor(eventId, userId) {
+  const event = db.prepare('SELECT * FROM events WHERE id = ?').get(eventId);
+  const user = db.prepare('SELECT id, username, name, role FROM users WHERE id = ?').get(userId);
+  if (!event || !user) return null;
+  const { canManage, canView } = eventAccess(event, user);
+  return canView ? eventDetail(event, user, canManage) : null;
+}
+
+function notify(eventId) {
+  for (const sub of subscribers.get(eventId) || []) {
+    const view = viewFor(eventId, sub.userId);
+    if (view) {
+      sendEvent(sub.res, view);
+    } else {
+      sendEvent(sub.res, {}, 'gone');
+      sub.res.end();
+    }
+  }
+}
+
+// After changes that can affect any event (a user removed or given another role).
+function notifyAll() {
+  for (const eventId of subscribers.keys()) notify(eventId);
+}
+
+function openStream(req, res, { eventId, userId }) {
+  res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-store', 'X-Accel-Buffering': 'no' });
+  res.write('retry: 3000\n\n');
+  const view = viewFor(eventId, userId);
+  if (!view) {
+    sendEvent(res, {}, 'gone');
+    res.end();
+    return;
+  }
+  sendEvent(res, view);
+  const sub = { res, userId };
+  if (!subscribers.has(eventId)) subscribers.set(eventId, new Set());
+  subscribers.get(eventId).add(sub);
+  req.on('close', () => {
+    const set = subscribers.get(eventId);
+    set?.delete(sub);
+    if (!set?.size) subscribers.delete(eventId);
+  });
+}
+
+// A comment line every 25 s keeps idle streams open through proxies and Wi-Fi power saving.
+setInterval(() => {
+  for (const set of subscribers.values()) for (const { res } of set) res.write(': ping\n\n');
+}, 25_000).unref();
 
 // ---------- routes ----------
 
@@ -359,10 +472,11 @@ const route = (method, pattern, handler) => routes.push({ method, pattern, handl
 
 route('GET', /^\/api\/me$/, (ctx) => ({ user: ctx.user }));
 
-route('POST', /^\/api\/login$/, (ctx) => {
+route('POST', /^\/api\/login$/, async (ctx) => {
   checkAuthRate(ctx.ip);
   const user = db.prepare('SELECT * FROM users WHERE username = ?').get(String(ctx.body.username || '').trim());
-  if (!user || !verifyPassword(String(ctx.body.password || ''), user.password_hash)) {
+  const valid = await verifyPassword(String(ctx.body.password || ''), user?.password_hash ?? DUMMY_PASSWORD_HASH);
+  if (!user || !valid) {
     recordAuthFailure(ctx.ip);
     throw new HttpError(401, 'Wrong username or password');
   }
@@ -371,7 +485,7 @@ route('POST', /^\/api\/login$/, (ctx) => {
 });
 
 // Anyone can create a shooter account; hosts and admins are created by an admin.
-route('POST', /^\/api\/register$/, (ctx) => {
+route('POST', /^\/api\/register$/, async (ctx) => {
   checkAuthRate(ctx.ip);
   const name = text(ctx.body.name, 'Name', 40);
   const login = username(ctx.body.username);
@@ -382,33 +496,42 @@ route('POST', /^\/api\/register$/, (ctx) => {
   }
   const { lastInsertRowid } = db.prepare(
     'INSERT INTO users (username, name, password_hash, role, created_at) VALUES (?, ?, ?, ?, ?)',
-  ).run(login, name, hashPassword(password), 'shooter', Date.now());
+  ).run(login, name, await hashPassword(password), 'shooter', Date.now());
   startSession(ctx, Number(lastInsertRowid));
   return { user: { id: Number(lastInsertRowid), username: login, name, role: 'shooter' } };
 });
 
 route('POST', /^\/api\/logout$/, (ctx) => {
-  if (ctx.rawCookies.pp_session) db.prepare('DELETE FROM sessions WHERE token = ?').run(ctx.rawCookies.pp_session);
+  if (ctx.rawCookies.pp_session) db.prepare('DELETE FROM sessions WHERE token = ?').run(tokenHash(ctx.rawCookies.pp_session));
   ctx.cookies.push(cookie('pp_session', '', 0));
   return { ok: true };
 });
 
-route('POST', /^\/api\/me\/password$/, (ctx) => {
+route('POST', /^\/api\/me\/password$/, async (ctx) => {
   const me = requireUser(ctx);
   const user = db.prepare('SELECT * FROM users WHERE id = ?').get(me.id);
-  if (!verifyPassword(String(ctx.body.current || ''), user.password_hash)) {
+  if (!await verifyPassword(String(ctx.body.current || ''), user.password_hash)) {
     throw new HttpError(400, 'Current password is wrong');
   }
-  db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(hashPassword(newPassword(ctx.body.next)), me.id);
+  const next = newPassword(ctx.body.next);
+  db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(await hashPassword(next), me.id);
   return { ok: true };
 });
 
 // --- events ---
 
+// Lists are paged newest first by id (ids grow with creation time). A page is fetched with one extra row
+// to know whether there is more; `next` is the cursor for the following page, or null.
+function paged(rows) {
+  const page = rows.slice(0, PAGE_SIZE);
+  return { rows: page, next: rows.length > PAGE_SIZE ? page[page.length - 1].id : null };
+}
+const cursor = (value) => Number(value) || Number.MAX_SAFE_INTEGER;
+
 // Events the user has an entry in, with their time and rank. Every role can shoot, so this is
 // everyone's "My events" history.
-function joinedEvents(userId) {
-  return db.prepare(`
+function joinedEvents(userId, before) {
+  return paged(db.prepare(`
     SELECT ev.id, ev.name, ev.status, ev.started_at, ev.finished_at, ev.created_at, en.stopped_at,
            (SELECT COUNT(*) FROM entries x WHERE x.event_id = ev.id) AS participant_count,
            CASE WHEN en.stopped_at IS NULL THEN NULL ELSE
@@ -416,23 +539,49 @@ function joinedEvents(userId) {
               WHERE x.event_id = ev.id AND x.stopped_at IS NOT NULL AND x.stopped_at < en.stopped_at) + 1
            END AS rank
     FROM entries en JOIN events ev ON ev.id = en.event_id
-    WHERE en.user_id = ? ORDER BY ev.created_at DESC
-  `).all(userId).map(({ stopped_at, ...row }) => ({ ...row, ms: stopped_at == null ? null : stopped_at - row.started_at }));
+    WHERE en.user_id = ? AND ev.id < ? ORDER BY ev.id DESC LIMIT ?
+  `).all(userId, cursor(before), PAGE_SIZE + 1)
+    .map(({ stopped_at, ...row }) => ({ ...row, ms: stopped_at == null ? null : stopped_at - row.started_at })));
 }
 
-// Staff get the events they manage in `events`; everyone gets the events they joined in `joined`
-// (for shooters `events` is the same list, as before).
-route('GET', /^\/api\/events$/, (ctx) => {
-  const user = requireUser(ctx);
-  const joined = joinedEvents(user.id);
-  if (!isStaff(user)) return { events: joined, joined };
-  const sql = `
+// Events a host or admin manages: all current ones, or finished ones a page at a time.
+function managedEvents(user, { finished, before }) {
+  const rows = db.prepare(`
     SELECT ev.id, ev.name, ev.invite_code, ev.status, ev.started_at, ev.finished_at, ev.created_at,
            u.name AS host_name, (SELECT COUNT(*) FROM entries x WHERE x.event_id = ev.id) AS participant_count
     FROM events ev LEFT JOIN users u ON u.id = ev.host_id
-    ${user.role === 'admin' ? '' : 'WHERE ev.host_id = ?'}
-    ORDER BY ev.created_at DESC`;
-  return { events: user.role === 'admin' ? db.prepare(sql).all() : db.prepare(sql).all(user.id), joined };
+    WHERE (? = 'admin' OR ev.host_id = ?) AND (ev.status = 'finished') = ? AND ev.id < ?
+    ORDER BY ev.id DESC ${finished ? 'LIMIT ?' : ''}
+  `).all(user.role, user.id, finished ? 1 : 0, cursor(before), ...(finished ? [PAGE_SIZE + 1] : []));
+  return finished ? paged(rows) : { rows, next: null };
+}
+
+// Staff get the events they manage in `events` (all current ones plus the first page of finished ones);
+// everyone gets the first page of events they joined in `joined`. For shooters `events` is the same as
+// `joined`. `next` holds the cursors for GET /api/events/history.
+route('GET', /^\/api\/events$/, (ctx) => {
+  const user = requireUser(ctx);
+  const joined = joinedEvents(user.id);
+  if (!isStaff(user)) return { events: joined.rows, joined: joined.rows, next: { events: joined.next, joined: joined.next } };
+  const finished = managedEvents(user, { finished: true });
+  return {
+    events: [...managedEvents(user, { finished: false }).rows, ...finished.rows],
+    joined: joined.rows,
+    next: { events: finished.next, joined: joined.next },
+  };
+});
+
+// The next page of a list: ?list=managed (finished events you manage) or ?list=joined, &before=<cursor>.
+route('GET', /^\/api\/events\/history$/, (ctx) => {
+  const user = requireUser(ctx);
+  const before = ctx.query.get('before');
+  if (ctx.query.get('list') === 'managed') {
+    if (!isStaff(user)) throw new HttpError(403, 'Not allowed for your account');
+    const { rows, next } = managedEvents(user, { finished: true, before });
+    return { events: rows, next };
+  }
+  const { rows, next } = joinedEvents(user.id, before);
+  return { events: rows, next };
 });
 
 route('POST', /^\/api\/events$/, (ctx) => {
@@ -449,22 +598,29 @@ route('GET', /^\/api\/events\/(\d+)$/, (ctx) => {
   return eventDetail(event, ctx.user, canManage);
 });
 
+route('GET', /^\/api\/events\/(\d+)\/stream$/, (ctx) => {
+  const { event } = loadEvent(ctx, ctx.params[0]);
+  return new EventStream(event.id, ctx.user.id);
+});
+
 route('POST', /^\/api\/events\/(\d+)\/start$/, (ctx) => {
   const event = loadManagedEvent(ctx, ctx.params[0]);
   if (event.status !== 'waiting') throw new HttpError(409, 'This event has already started');
   if (!db.prepare('SELECT 1 FROM entries WHERE event_id = ?').get(event.id)) {
     throw new HttpError(409, 'Wait for at least one shooter to join');
   }
-  const startedAt = Date.now();
+  const startedAt = eventClock();
   db.prepare(`UPDATE events SET status = 'running', started_at = ? WHERE id = ?`).run(startedAt, event.id);
+  notify(event.id);
   return eventDetail({ ...event, status: 'running', started_at: startedAt }, ctx.user, true);
 });
 
 route('POST', /^\/api\/events\/(\d+)\/finish$/, (ctx) => {
   const event = loadManagedEvent(ctx, ctx.params[0]);
   if (event.status !== 'running') throw new HttpError(409, 'Only a running event can be ended');
-  const finishedAt = Date.now();
+  const finishedAt = eventClock();
   db.prepare(`UPDATE events SET status = 'finished', finished_at = ? WHERE id = ?`).run(finishedAt, event.id);
+  notify(event.id);
   return eventDetail({ ...event, status: 'finished', finished_at: finishedAt }, ctx.user, true);
 });
 
@@ -473,6 +629,7 @@ route('POST', /^\/api\/events\/(\d+)\/clear$/, (ctx) => {
   const event = loadManagedEvent(ctx, ctx.params[0]);
   if (event.status !== 'running') throw new HttpError(409, 'Times can only be cleared while the event is running');
   db.prepare('UPDATE entries SET stopped_at = NULL WHERE event_id = ? AND user_id = ?').run(event.id, Number(ctx.body.user_id));
+  notify(event.id);
   return eventDetail(event, ctx.user, true);
 });
 
@@ -484,6 +641,7 @@ route('GET', /^\/api\/events\/(\d+)\/results\.csv$/, (ctx) => {
 route('DELETE', /^\/api\/events\/(\d+)$/, (ctx) => {
   const event = loadManagedEvent(ctx, ctx.params[0]);
   db.prepare('DELETE FROM events WHERE id = ?').run(event.id);
+  notify(event.id);
   return { ok: true };
 });
 
@@ -498,6 +656,7 @@ route('POST', /^\/api\/join$/, (ctx) => {
   }
   if (event.status !== 'waiting') throw new HttpError(409, 'This event has already started');
   db.prepare('INSERT INTO entries (event_id, user_id, joined_at) VALUES (?, ?, ?)').run(event.id, user.id, Date.now());
+  notify(event.id);
   return { event_id: event.id };
 });
 
@@ -511,6 +670,7 @@ route('POST', /^\/api\/events\/(\d+)\/participate$/, (ctx) => {
   } else {
     db.prepare('INSERT OR IGNORE INTO entries (event_id, user_id, joined_at) VALUES (?, ?, ?)').run(event.id, ctx.user.id, Date.now());
   }
+  notify(event.id);
   return eventDetail(event, ctx.user, true);
 });
 
@@ -520,7 +680,8 @@ route('POST', /^\/api\/events\/(\d+)\/stop$/, (ctx) => {
   if (event.status !== 'running') throw new HttpError(409, event.status === 'waiting' ? 'The event hasn’t started yet' : 'This event has ended');
   if (entry.stopped_at != null) throw new HttpError(409, 'Your time is already recorded');
   db.prepare('UPDATE entries SET stopped_at = ? WHERE event_id = ? AND user_id = ? AND stopped_at IS NULL')
-    .run(Date.now(), event.id, ctx.user.id);
+    .run(eventClock(), event.id, ctx.user.id);
+  notify(event.id);
   return eventDetail(event, ctx.user, canManage);
 });
 
@@ -536,7 +697,7 @@ route('GET', /^\/api\/users$/, (ctx) => {
   };
 });
 
-route('POST', /^\/api\/users$/, (ctx) => {
+route('POST', /^\/api\/users$/, async (ctx) => {
   requireUser(ctx, 'admin');
   const login = username(ctx.body.username);
   const name = text(ctx.body.name, 'Name', 40);
@@ -546,58 +707,59 @@ route('POST', /^\/api\/users$/, (ctx) => {
     throw new HttpError(409, 'That username is taken');
   }
   db.prepare('INSERT INTO users (username, name, password_hash, role, created_at) VALUES (?, ?, ?, ?, ?)')
-    .run(login, name, hashPassword(password), role, Date.now());
+    .run(login, name, await hashPassword(password), role, Date.now());
   return { ok: true };
 });
 
+// Like role changes, other admins are off limits: removing one is done on the server.
 route('DELETE', /^\/api\/users\/(\d+)$/, (ctx) => {
   const admin = requireUser(ctx, 'admin');
   const id = Number(ctx.params[0]);
   if (id === admin.id) throw new HttpError(400, "You can't delete your own account");
+  if (db.prepare('SELECT role FROM users WHERE id = ?').get(id)?.role === 'admin') {
+    throw new HttpError(403, "You can't remove another admin");
+  }
   db.prepare('DELETE FROM users WHERE id = ?').run(id);
+  notifyAll();
   return { ok: true };
 });
 
 // Takes effect on the user's next request, since loadUser reads the role from the database each time.
-// Results and hosted events are kept; only what the user can do changes. Admins can't change their own
-// role, which also guarantees at least one admin remains.
+// Results and hosted events are kept; only what the user can do changes. Admins can promote anyone to
+// admin but can't change an admin's role (their own or another's), so admins can't demote each other and
+// at least one admin always remains. Demoting an admin is done on the server (see docs/deployment.md).
 route('POST', /^\/api\/users\/(\d+)\/role$/, (ctx) => {
   const admin = requireUser(ctx, 'admin');
   const id = Number(ctx.params[0]);
   if (id === admin.id) throw new HttpError(400, "You can't change your own role");
   if (!['admin', 'host', 'shooter'].includes(ctx.body.role)) throw new HttpError(400, 'Role must be admin, host or shooter');
-  if (!db.prepare('SELECT 1 FROM users WHERE id = ?').get(id)) throw new HttpError(404, 'User not found');
+  const target = db.prepare('SELECT role FROM users WHERE id = ?').get(id);
+  if (!target) throw new HttpError(404, 'User not found');
+  if (target.role === 'admin') throw new HttpError(403, "You can't change another admin's role");
   db.prepare('UPDATE users SET role = ? WHERE id = ?').run(ctx.body.role, id);
+  notifyAll();
   return { ok: true };
 });
 
-// Sets a new password for someone who forgot theirs and signs them out everywhere.
-route('POST', /^\/api\/users\/(\d+)\/password$/, (ctx) => {
+// Sets a new password for someone who forgot theirs and signs them out everywhere. Not for other admins,
+// since that would let one admin sign in as another.
+route('POST', /^\/api\/users\/(\d+)\/password$/, async (ctx) => {
   const admin = requireUser(ctx, 'admin');
   const id = Number(ctx.params[0]);
   if (id === admin.id) throw new HttpError(400, 'Use “Change password” for your own account');
   const password = newPassword(ctx.body.password);
-  if (!db.prepare('SELECT 1 FROM users WHERE id = ?').get(id)) throw new HttpError(404, 'User not found');
-  db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(hashPassword(password), id);
+  const target = db.prepare('SELECT role FROM users WHERE id = ?').get(id);
+  if (!target) throw new HttpError(404, 'User not found');
+  if (target.role === 'admin') throw new HttpError(403, "You can't reset another admin's password");
+  db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(await hashPassword(password), id);
   db.prepare('DELETE FROM sessions WHERE user_id = ?').run(id);
   return { ok: true };
 });
 
-// Wins and podiums only count finished events, since ranks can still change while one is running.
-route('GET', /^\/api\/stats$/, (ctx) => {
-  requireUser(ctx, 'admin');
-  const countBy = (sql) => Object.fromEntries(db.prepare(sql).all().map((r) => [r.k, r.n]));
-  const entries = db.prepare(`
-    SELECT COUNT(*) AS total, COUNT(en.stopped_at) AS finished,
-           COUNT(CASE WHEN ev.status = 'finished' THEN 1 END) AS in_finished_events,
-           COUNT(CASE WHEN ev.status = 'finished' AND en.stopped_at IS NULL THEN 1 END) AS dnf
-    FROM entries en JOIN events ev ON ev.id = en.event_id
-  `).get();
-  return {
-    users: { admin: 0, host: 0, shooter: 0, ...countBy('SELECT role AS k, COUNT(*) AS n FROM users GROUP BY role') },
-    events: { waiting: 0, running: 0, finished: 0, ...countBy('SELECT status AS k, COUNT(*) AS n FROM events GROUP BY status') },
-    entries,
-    shooters: db.prepare(`
+// Per-shooter totals, PAGE_SIZE rows at a time from `offset`. Wins and podiums only count finished
+// events, since ranks can still change while one is running.
+function shooterStats(offset) {
+  const rows = db.prepare(`
       WITH ranked AS (
         SELECT en.user_id, en.joined_at, en.stopped_at, ev.status,
                CASE WHEN en.stopped_at IS NULL THEN NULL ELSE
@@ -617,8 +779,31 @@ route('GET', /^\/api\/stats$/, (ctx) => {
       GROUP BY u.id
       -- Hosts who shot in their own events are listed too.
       HAVING u.role = 'shooter' OR COUNT(r.user_id) > 0
-      ORDER BY events DESC, u.name
-    `).all(),
+      ORDER BY events DESC, u.name, u.id
+      LIMIT ? OFFSET ?
+    `).all(PAGE_SIZE + 1, offset);
+  return { shooters: rows.slice(0, PAGE_SIZE), next_offset: rows.length > PAGE_SIZE ? offset + PAGE_SIZE : null };
+}
+
+route('GET', /^\/api\/stats\/shooters$/, (ctx) => {
+  requireUser(ctx, 'admin');
+  return shooterStats(Math.max(0, Number(ctx.query.get('offset')) || 0));
+});
+
+route('GET', /^\/api\/stats$/, (ctx) => {
+  requireUser(ctx, 'admin');
+  const countBy = (sql) => Object.fromEntries(db.prepare(sql).all().map((r) => [r.k, r.n]));
+  const entries = db.prepare(`
+    SELECT COUNT(*) AS total, COUNT(en.stopped_at) AS finished,
+           COUNT(CASE WHEN ev.status = 'finished' THEN 1 END) AS in_finished_events,
+           COUNT(CASE WHEN ev.status = 'finished' AND en.stopped_at IS NULL THEN 1 END) AS dnf
+    FROM entries en JOIN events ev ON ev.id = en.event_id
+  `).get();
+  return {
+    users: { admin: 0, host: 0, shooter: 0, ...countBy('SELECT role AS k, COUNT(*) AS n FROM users GROUP BY role') },
+    events: { waiting: 0, running: 0, finished: 0, ...countBy('SELECT status AS k, COUNT(*) AS n FROM events GROUP BY status') },
+    entries,
+    ...shooterStats(0),
     staff: db.prepare(`
       SELECT u.id, u.name, u.username, u.role,
              COUNT(ev.id) AS events,
@@ -642,23 +827,70 @@ const MIME = {
   '.json': 'application/json',
 };
 
+// Static files are kept in memory with a gzipped copy and an ETag, and reloaded when they change on disk.
+// Browsers revalidate on every load (no-cache) and get a 304 when nothing changed.
+const staticCache = new Map();
+
+async function loadStatic(file) {
+  const { mtimeMs } = await stat(file);
+  const cached = staticCache.get(file);
+  if (cached?.mtimeMs === mtimeMs) return cached;
+  const body = await readFile(file);
+  const entry = { mtimeMs, body, gzip: gzipSync(body), etag: `"${crypto.createHash('sha1').update(body).digest('base64url')}"` };
+  staticCache.set(file, entry);
+  return entry;
+}
+
 async function serveStatic(req, res, pathname) {
   const file = path.normalize(path.join(PUBLIC_DIR, pathname === '/' ? 'index.html' : pathname));
-  if (!file.startsWith(PUBLIC_DIR + path.sep)) throw new HttpError(404, 'Not found');
+  let entry;
   try {
-    const data = await readFile(file);
-    res.writeHead(200, { 'Content-Type': MIME[path.extname(file)] || 'application/octet-stream', 'Cache-Control': 'no-cache' });
-    res.end(data);
+    if (!file.startsWith(PUBLIC_DIR + path.sep)) throw new Error('outside public/');
+    entry = await loadStatic(file);
   } catch {
     res.writeHead(404, { 'Content-Type': 'text/plain' });
     res.end('Not found');
+    return;
   }
+  const headers = { 'Cache-Control': 'no-cache', ETag: entry.etag, Vary: 'Accept-Encoding' };
+  if (req.headers['if-none-match'] === entry.etag) {
+    res.writeHead(304, headers).end();
+    return;
+  }
+  const gzip = /\bgzip\b/.test(req.headers['accept-encoding'] || '') && entry.gzip.length < entry.body.length;
+  const body = gzip ? entry.gzip : entry.body;
+  res.writeHead(200, {
+    ...headers,
+    'Content-Type': MIME[path.extname(file)] || 'application/octet-stream',
+    'Content-Length': body.length,
+    ...(gzip ? { 'Content-Encoding': 'gzip' } : {}),
+  });
+  res.end(req.method === 'HEAD' ? undefined : body);
 }
 
+// Content Security Policy: only this app's own files may load, nothing may embed it, and the one inline
+// script (the theme snippet in index.html) is allowed by its hash, computed here so editing it can't
+// silently break the policy.
+const inlineScriptHashes = [...readFileSync(path.join(PUBLIC_DIR, 'index.html'), 'utf8').matchAll(/<script>([\s\S]*?)<\/script>/g)]
+  .map(([, code]) => `'sha256-${crypto.createHash('sha256').update(code).digest('base64')}'`);
+const CONTENT_SECURITY_POLICY = [
+  "default-src 'self'",
+  `script-src 'self' ${inlineScriptHashes.join(' ')}`,
+  "style-src 'self'",
+  "img-src 'self' data:",
+  "connect-src 'self'",
+  "object-src 'none'",
+  "base-uri 'none'",
+  "form-action 'self'",
+  "frame-ancestors 'none'",
+].join('; ');
+
 async function handleRequest(req, res) {
-  const { pathname } = new URL(req.url, 'http://localhost');
+  const { pathname, searchParams } = new URL(req.url, 'http://localhost');
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('Referrer-Policy', 'same-origin');
+  res.setHeader('Content-Security-Policy', CONTENT_SECURITY_POLICY);
+  res.setHeader('X-Frame-Options', 'DENY');
 
   if (!pathname.startsWith('/api/')) {
     if (req.method !== 'GET' && req.method !== 'HEAD') {
@@ -668,7 +900,7 @@ async function handleRequest(req, res) {
     return serveStatic(req, res, pathname);
   }
 
-  const ctx = { cookies: [], ip: req.socket.remoteAddress };
+  const ctx = { cookies: [], ip: req.socket.remoteAddress, query: searchParams };
   try {
     const match = routes.find((r) => r.method === req.method && r.pattern.test(pathname));
     if (!match) throw new HttpError(404, 'Not found');
@@ -678,6 +910,10 @@ async function handleRequest(req, res) {
     ctx.body = await readJson(req);
     const result = await match.handler(ctx);
     if (ctx.cookies.length) res.setHeader('Set-Cookie', ctx.cookies);
+    if (result instanceof EventStream) {
+      openStream(req, res, result);
+      return;
+    }
     if (result instanceof Download) {
       res.writeHead(200, {
         'Content-Type': result.contentType,
@@ -829,9 +1065,32 @@ function loadTls() {
   return { cert: readFileSync(certFile), key: readFileSync(keyFile) };
 }
 
+// ---------- maintenance ----------
+
+// Ends running events that were started more than AUTO_FINISH_HOURS ago and forgotten.
+function autoFinishEvents() {
+  if (!(AUTO_FINISH_HOURS > 0)) return;
+  const stale = db.prepare(`SELECT id, name FROM events WHERE status = 'running' AND started_at < ?`)
+    .all(eventClock() - AUTO_FINISH_HOURS * 3600 * 1000);
+  for (const { id, name } of stale) {
+    db.prepare(`UPDATE events SET status = 'finished', finished_at = ? WHERE id = ? AND status = 'running'`).run(eventClock(), id);
+    console.log(`Ended event "${name}" automatically: it had been running for more than ${AUTO_FINISH_HOURS} hours.`);
+    notify(id);
+  }
+}
+
+function maintenance() {
+  db.prepare('DELETE FROM sessions WHERE created_at < ?').run(Date.now() - SESSION_TTL);
+  pruneAuthFailures();
+  autoFinishEvents();
+}
+maintenance();
+setInterval(maintenance, 10 * 60 * 1000).unref();
+
 // ---------- listen ----------
 
 function printUrls(scheme) {
+  console.log(`Timezone: ${Intl.DateTimeFormat().resolvedOptions().timeZone}`);
   console.log('Pellet Pace running at:');
   for (const host of ['localhost', ...(TLS_HOSTS.length ? TLS_HOSTS : lanAddresses())]) {
     console.log(`  ${scheme}://${host.includes(':') ? `[${host}]` : host}:${PORT}`);
@@ -854,7 +1113,10 @@ if (USE_HTTPS) {
     res.end();
   });
   net.createServer((socket) => {
+    // A client that connects but never sends anything is dropped instead of holding the socket forever.
+    socket.setTimeout(10_000, () => socket.destroy());
     socket.once('data', (chunk) => {
+      socket.setTimeout(0);
       socket.pause();
       socket.unshift(chunk);
       // 0x16 is the first byte of a TLS handshake record.

@@ -82,6 +82,8 @@ Browsers will warn about the self-signed certificate the first time on each devi
 | `TLS_DIR`       | `data/tls`            | Where the self-signed certificate is stored     |
 | `TLS_HOSTS`     | auto-detected         | Comma-separated names/IPs for the self-signed certificate |
 | `COOKIE_SECURE` | unset                 | With `HTTPS=0`, set to `1` if a proxy serves HTTPS |
+| `TZ`            | `Asia/Dubai` (Docker) | Timezone for server-side dates (CSV names, logs, auto-end) |
+| `AUTO_FINISH_HOURS` | `24`              | End events left running this long (`0` = never) |
 
 ## Upgrading from the laps version
 

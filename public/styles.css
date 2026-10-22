@@ -416,3 +416,83 @@ details[open] > summary { margin-bottom: 12px; }
   z-index: 20;
 }
 .toast.is-error { background: var(--stop); color: #fff; }
+
+/* ---------- utilities ---------- */
+
+/* Read by screen readers, not shown. */
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+/* The hidden textarea used to copy text on browsers without the Clipboard API. */
+.offscreen { position: fixed; top: 0; left: 0; opacity: 0; pointer-events: none; }
+.row-spaced { margin-bottom: 16px; }
+.more { margin-top: 10px; }
+
+/* ---------- compact top bar on phones ---------- */
+
+.btn-icon { min-width: 38px; padding: 6px 10px; font-size: 1.05rem; }
+.menu { position: relative; }
+.menu-panel {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 6px);
+  z-index: 15;
+  display: grid;
+  gap: 6px;
+  min-width: 170px;
+  padding: 8px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 0 6px 20px rgb(0 0 0 / 18%);
+}
+.menu-panel[hidden] { display: none; }
+.menu-panel .btn { justify-content: flex-start; width: 100%; }
+@media (max-width: 520px) {
+  .topbar { gap: 8px; flex-wrap: nowrap; }
+  .topbar-actions { gap: 6px; flex-wrap: nowrap; }
+  .who-name { display: none; }
+}
+
+/* ---------- tables that stack into cards on phones ---------- */
+
+@media (max-width: 600px) {
+  .board.stack-mobile thead { display: none; }
+  .board.stack-mobile tr {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 4px 16px;
+    padding: 12px 0;
+    border-bottom: 1px solid var(--border);
+  }
+  .board.stack-mobile tr:last-child { border-bottom: 0; }
+  .board.stack-mobile td {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 8px;
+    padding: 2px 0;
+    border: 0;
+    text-align: right;
+  }
+  .board.stack-mobile td::before {
+    content: attr(data-label);
+    color: var(--muted);
+    font-size: 0.78rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+  .board.stack-mobile td.cell-main { grid-column: 1 / -1; display: block; text-align: left; font-weight: 600; }
+  .board.stack-mobile td.cell-main::before { content: none; }
+  /* A row's action button (e.g. Remove) sits on its own line, right-aligned; empty when there is none. */
+  .board.stack-mobile td.cell-action { grid-column: 1 / -1; justify-content: flex-end; width: auto; }
+  .board.stack-mobile td.cell-action:empty { display: none; }
+  .board.stack-mobile td.cell-action::before { content: none; }
+}

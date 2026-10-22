@@ -1,6 +1,7 @@
 const app = document.getElementById('app');
 const topbarActions = document.getElementById('topbar-actions');
 const toastEl = document.getElementById('toast');
+const announcer = document.getElementById('announcer');
 
 // ---------- helpers ----------
 
@@ -42,6 +43,13 @@ function toast(message, isError = false) {
   toastEl.hidden = false;
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => { toastEl.hidden = true; }, 3200);
+}
+
+// Screen readers hear important changes through one persistent live region. The page itself isn't a live
+// region, because it re-renders whenever the event data changes.
+function announce(message) {
+  announcer.textContent = '';
+  setTimeout(() => { announcer.textContent = message; }, 50);
 }
 
 function fmt(ms) {
@@ -100,7 +108,7 @@ async function copyText(value) {
   try {
     await navigator.clipboard.writeText(value);
   } catch {
-    const ta = h('textarea', { style: 'position:fixed;opacity:0' });
+    const ta = h('textarea', { class: 'offscreen' });
     ta.value = value;
     document.body.append(ta);
     ta.select();
@@ -193,30 +201,65 @@ async function router() {
   }
 }
 
+// On phones the navigation collapses into a menu so the top bar stays one row.
+const compactTopbar = window.matchMedia('(max-width: 520px)');
+compactTopbar.addEventListener('change', () => renderTopbar());
+
 function renderTopbar() {
   const items = [];
   if (me) {
-    items.push(h('span', { class: 'who' }, me.name, ' ', h('span', { class: 'chip chip-role' }, me.role)));
-    items.push(h('a', { class: 'btn btn-ghost btn-sm', href: isStaff() ? '#/events' : '#/home' }, isStaff() ? 'Events' : 'My events'));
-    if (me.role === 'admin') {
-      items.push(h('a', { class: 'btn btn-ghost btn-sm', href: '#/users' }, 'Users'));
-      items.push(h('a', { class: 'btn btn-ghost btn-sm', href: '#/stats' }, 'Stats'));
-    }
-    items.push(h('button', {
-      class: 'btn btn-ghost btn-sm',
-      onclick: async () => { await api('POST', '/api/logout'); go('/login'); },
-    }, 'Sign out'));
+    const nav = [
+      h('a', { class: 'btn btn-ghost btn-sm', href: isStaff() ? '#/events' : '#/home' }, isStaff() ? 'Events' : 'My events'),
+      me.role === 'admin' ? h('a', { class: 'btn btn-ghost btn-sm', href: '#/users' }, 'Users') : null,
+      me.role === 'admin' ? h('a', { class: 'btn btn-ghost btn-sm', href: '#/stats' }, 'Stats') : null,
+      h('button', {
+        class: 'btn btn-ghost btn-sm',
+        onclick: async () => { await api('POST', '/api/logout'); go('/login'); },
+      }, 'Sign out'),
+    ];
+    items.push(h('span', { class: 'who' }, h('span', { class: 'who-name' }, me.name), ' ', h('span', { class: 'chip chip-role' }, me.role)));
+    items.push(compactTopbar.matches ? navMenu(nav) : nav);
   }
   items.push(themeButton());
-  topbarActions.replaceChildren(...items);
+  topbarActions.replaceChildren(...items.flat());
 }
+
+// The menu closes as soon as a link in it is tapped, or on a tap outside it.
+function navMenu(links) {
+  const panel = h('div', {
+    class: 'menu-panel',
+    id: 'nav-menu',
+    hidden: true,
+    onclick: (e) => { if (e.target.closest('a, button')) setMenuOpen(false); },
+  }, links);
+  const toggle = h('button', {
+    type: 'button',
+    class: 'btn btn-ghost btn-sm',
+    'aria-expanded': 'false',
+    'aria-controls': 'nav-menu',
+    onclick: () => setMenuOpen(panel.hidden),
+  }, '☰ Menu');
+  function setMenuOpen(open) {
+    panel.hidden = !open;
+    toggle.setAttribute('aria-expanded', String(open));
+  }
+  const menu = h('div', { class: 'menu' }, toggle, panel);
+  menu.close = () => setMenuOpen(false);
+  return menu;
+}
+
+document.addEventListener('click', (e) => {
+  const menu = topbarActions.querySelector('.menu');
+  if (menu && !menu.contains(e.target)) menu.close();
+});
 
 // ---------- theme ----------
 
 // 'auto' follows the device setting; a Light or Dark choice is remembered per browser.
 // index.html applies the remembered choice before the first paint.
 const THEMES = ['auto', 'light', 'dark'];
-const THEME_LABEL = { auto: '◐ Auto', light: '☀︎ Light', dark: '☾ Dark' };
+const THEME_ICON = { auto: '◐', light: '☀︎', dark: '☾' };
+const THEME_NAME = { auto: 'Auto', light: 'Light', dark: 'Dark' };
 
 function currentTheme() {
   try {
@@ -241,14 +284,14 @@ function themeButton() {
   const next = THEMES[(THEMES.indexOf(theme) + 1) % THEMES.length];
   return h('button', {
     type: 'button',
-    class: 'btn btn-ghost btn-sm',
-    title: 'Colour theme: Auto follows this device',
-    'aria-label': `Colour theme: ${theme}. Switch to ${next}.`,
+    class: 'btn btn-ghost btn-sm btn-icon',
+    title: `Colour theme: ${THEME_NAME[theme]}${theme === 'auto' ? ' (follows this device)' : ''}. Tap for ${THEME_NAME[next]}.`,
+    'aria-label': `Colour theme: ${THEME_NAME[theme]}. Switch to ${THEME_NAME[next]}.`,
     onclick: () => {
       setTheme(next);
       renderTopbar();
     },
-  }, THEME_LABEL[theme]);
+  }, THEME_ICON[theme]);
 }
 
 // ---------- sign in / sign up ----------
@@ -350,25 +393,60 @@ function joinCard() {
     h('button', { class: 'btn btn-primary btn-block', type: 'submit' }, 'Join event')));
 }
 
-function joinedList(events) {
-  return events.length
-    ? h('div', { class: 'item-list' }, events.map((ev) => h('a', { class: 'item', href: `#/event/${ev.id}` },
-      h('div', {},
-        h('div', { class: 'title' }, ev.name, ' ', statusChip(ev.status)),
-        h('div', { class: 'muted small' }, `${fmtDate(ev.created_at)} · ${ev.participant_count} shooters`)),
-      h('div', { class: 'result' }, shooterResult(ev)))))
-    : h('div', { class: 'empty' }, 'You haven’t joined any events yet.');
+// "Show more" under a paged list: loads the page after `next` with fetchPage(cursor) -> { rows, next },
+// hands the rows to append(), and removes itself when there is nothing left.
+function moreButton(next, fetchPage, append) {
+  if (next == null) return null;
+  let cursor = next;
+  const btn = h('button', {
+    type: 'button',
+    class: 'btn btn-ghost btn-block more',
+    onclick: async () => {
+      btn.disabled = true;
+      try {
+        const page = await fetchPage(cursor);
+        append(page.rows);
+        cursor = page.next;
+        if (cursor == null) btn.remove();
+      } catch (err) {
+        toast(err.message, true);
+      } finally {
+        btn.disabled = false;
+      }
+    },
+  }, 'Show more');
+  return btn;
+}
+
+async function eventHistory(list, before) {
+  const { events, next } = await api('GET', `/api/events/history?list=${list}&before=${before}`);
+  return { rows: events, next };
+}
+
+function joinedItem(ev) {
+  return h('a', { class: 'item', href: `#/event/${ev.id}` },
+    h('div', {},
+      h('div', { class: 'title' }, ev.name, ' ', statusChip(ev.status)),
+      h('div', { class: 'muted small' }, `${fmtDate(ev.created_at)} · ${ev.participant_count} shooters`)),
+    h('div', { class: 'result' }, shooterResult(ev)));
+}
+
+function joinedList(events, next) {
+  if (!events.length) return h('div', { class: 'empty' }, 'You haven’t joined any events yet.');
+  const list = h('div', { class: 'item-list' }, events.map(joinedItem));
+  return h('div', {}, list,
+    moreButton(next, (before) => eventHistory('joined', before), (rows) => list.append(...rows.map(joinedItem))));
 }
 
 async function viewHome() {
   const mount = mounter();
-  const { joined } = await api('GET', '/api/events');
+  const { joined, next } = await api('GET', '/api/events');
 
   mount(h('div', {},
     h('div', { class: 'page-head' }, h('h1', {}, `Hi, ${me.name}`)),
     joinCard(),
     h('h2', {}, 'My events'),
-    joinedList(joined),
+    joinedList(joined, next.joined),
     h('div', { class: 'card spaced' }, passwordForm())));
 }
 
@@ -383,7 +461,7 @@ function shooterResult(ev) {
 
 async function viewEvents() {
   const mount = mounter();
-  const { events, joined } = await api('GET', '/api/events');
+  const { events, joined, next } = await api('GET', '/api/events');
   const error = h('p', { class: 'error' });
   const nameInput = h('input', { name: 'name', maxlength: 80, placeholder: 'Saturday 10m air rifle', required: true });
 
@@ -397,6 +475,7 @@ async function viewEvents() {
 
   const active = events.filter((ev) => ev.status !== 'finished');
   const past = events.filter((ev) => ev.status === 'finished');
+  const pastList = h('div', { class: 'item-list' }, past.map(item));
 
   mount(h('div', {},
     h('div', { class: 'page-head' },
@@ -418,12 +497,13 @@ async function viewEvents() {
     h('h2', {}, 'Current events'),
     active.length ? h('div', { class: 'item-list' }, active.map(item)) : h('div', { class: 'empty' }, 'No current events.'),
     h('h2', { class: 'spaced' }, 'Previous events'),
-    past.length ? h('div', { class: 'item-list' }, past.map(item)) : h('div', { class: 'empty' }, 'Finished events will appear here.'),
+    past.length ? pastList : h('div', { class: 'empty' }, 'Finished events will appear here.'),
+    moreButton(next.events, (before) => eventHistory('managed', before), (rows) => pastList.append(...rows.map(item))),
     h('h2', { class: 'spaced' }, 'Shooting'),
     h('p', { class: 'muted' }, 'You can shoot in any event: join with its invite code, or tap “I’m shooting too” on an event you run.'),
     joinCard(),
     h('h3', {}, 'My events'),
-    joinedList(joined),
+    joinedList(joined, next.joined),
     h('div', { class: 'card spaced' }, passwordForm())));
 }
 
@@ -453,16 +533,40 @@ async function viewEvent(id) {
   let data;
   let lastSignature = '';
   let busy = false;
+  let pendingRender = false;
+  let closed = false;
+  let deleting = false;
+  let wakeLock = null;
+
+  // Every fresh copy of the event goes through here, whether from the live stream, the fallback poll or
+  // an action. Only real changes re-render, so a button isn't swapped out from under a finger mid-tap;
+  // while an action is in flight or a two-tap confirmation is armed, the render waits (see below).
+  function apply(next, { force = false } = {}) {
+    if (closed) return;
+    syncClock(next.now);
+    announceChanges(data, next);
+    data = next;
+    if (!force && JSON.stringify({ ...next, now: 0 }) === lastSignature) return;
+    if (!force && (busy || app.querySelector('.armed'))) {
+      pendingRender = true;
+      return;
+    }
+    render();
+  }
+
+  function announceChanges(prev, next) {
+    if (!prev) return;
+    if (prev.event.status !== next.event.status && next.event.status !== 'waiting') {
+      announce(next.event.status === 'running' ? 'The event has started.' : 'The event has ended.');
+    }
+    if (next.me?.stopped && !prev.me?.stopped) {
+      announce(`Your time is ${fmt(next.me.ms)}, rank ${next.me.rank} of ${next.participantCount}.`);
+    }
+  }
 
   async function load() {
     try {
-      const next = await api('GET', `/api/events/${id}`);
-      syncClock(next.now);
-      data = next;
-      // Only re-render on real changes, so a button isn't swapped out from under a finger mid-tap,
-      // and never while a two-tap confirmation is armed.
-      const signature = JSON.stringify({ ...next, now: 0 });
-      if (signature !== lastSignature && !busy && !app.querySelector('.armed')) render();
+      apply(await api('GET', `/api/events/${id}`));
     } catch (err) {
       if (err.status === 404 || err.status === 401) {
         toast(err.message, true);
@@ -474,18 +578,42 @@ async function viewEvent(id) {
   async function act(promise) {
     busy = true;
     try {
-      data = await promise;
-      syncClock(data.now);
-    } catch (err) {
-      toast(err.message, true);
-    } finally {
+      const next = await promise;
       busy = false;
+      apply(next, { force: true });
+    } catch (err) {
+      busy = false;
+      toast(err.message, true);
       render();
     }
   }
 
+  // Keeps the screen on while this device takes part (shooting or running the event), so the clock and
+  // STOP stay visible. Browsers drop the lock when the page is hidden; it's taken again when it's shown.
+  async function keepAwake() {
+    if (!('wakeLock' in navigator)) return;
+    const want = !closed && document.visibilityState === 'visible'
+      && Boolean(data && data.event.status !== 'finished' && (data.me || data.canManage));
+    try {
+      if (want && !wakeLock) {
+        wakeLock = navigator.wakeLock.request('screen'); // the pending request blocks duplicates
+        const lock = await wakeLock;
+        wakeLock = lock;
+        lock.addEventListener('release', () => { if (wakeLock === lock) wakeLock = null; });
+      } else if (!want && wakeLock) {
+        const lock = await wakeLock;
+        wakeLock = null;
+        await lock.release();
+      }
+    } catch {
+      wakeLock = null; // refused (e.g. battery saver): the screen may turn off as usual
+    }
+  }
+
   function render() {
+    pendingRender = false;
     lastSignature = JSON.stringify({ ...data, now: 0 });
+    keepAwake();
     const { event } = data;
     mount(h('div', {},
       h('p', {}, h('a', { href: isStaff() ? '#/events' : '#/home' }, isStaff() ? '← All events' : '← My events')),
@@ -533,7 +661,7 @@ async function viewEvent(id) {
           confirmButton('End event', 'Tap again to end', () => act(api('POST', `/api/events/${id}/finish`)), 'btn btn-stop')),
         h('p', { class: 'muted small center' }, 'Anyone who hasn’t stopped when the event ends is marked “did not finish”.'));
     }
-    return h('div', { class: 'row', style: 'margin-bottom:16px' }, deleteButton());
+    return h('div', { class: 'row row-spaced' }, deleteButton());
   }
 
   function participateToggle() {
@@ -549,7 +677,13 @@ async function viewEvent(id) {
 
   function deleteButton() {
     return confirmButton('Delete event', 'Tap to delete', async () => {
-      await api('DELETE', `/api/events/${id}`);
+      deleting = true; // the stream's "gone" message may arrive first; this device shows its own toast
+      try {
+        await api('DELETE', `/api/events/${id}`);
+      } catch (err) {
+        deleting = false;
+        throw err;
+      }
       toast('Event deleted');
       go('/events');
     });
@@ -625,7 +759,26 @@ async function viewEvent(id) {
   }
 
   await load();
-  poll(load, 1500);
+  // Live updates arrive over the stream; the slow poll is only a safety net and re-syncs the clock.
+  const stream = new EventSource(`/api/events/${id}/stream`);
+  stream.onmessage = (e) => apply(JSON.parse(e.data));
+  stream.addEventListener('gone', () => {
+    stream.close();
+    if (deleting) return;
+    toast('This event is no longer available', true);
+    go(homePath());
+  });
+  poll(load, 15000);
+  poll(() => {
+    if (pendingRender && !busy && !app.querySelector('.armed')) render();
+  }, 300);
+  document.addEventListener('visibilitychange', keepAwake);
+  cleanups.push(() => {
+    closed = true;
+    stream.close();
+    document.removeEventListener('visibilitychange', keepAwake);
+    keepAwake();
+  });
 }
 
 function eventMeta({ event, participantCount }) {
@@ -677,13 +830,15 @@ async function viewUsers() {
       h('button', { class: 'btn btn-primary', type: 'submit' }, 'Add user'))),
     resetPasswordForm(users),
     h('div', { class: 'card' },
-      h('div', { class: 'table-wrap' }, h('table', { class: 'board' },
+      h('div', { class: 'table-wrap' }, h('table', { class: 'board stack-mobile' },
         h('thead', {}, h('tr', {}, h('th', {}, 'Name'), h('th', {}, 'Username'), h('th', {}, 'Role'), h('th', {}, ''))),
         h('tbody', {}, users.map((u) => h('tr', {},
-          h('td', {}, u.name, u.id === me.id ? h('span', { class: 'muted' }, ' (you)') : null),
-          h('td', { class: 'muted' }, u.username),
-          h('td', {}, u.id === me.id ? h('span', { class: 'chip chip-role' }, u.role) : roleSelect(u)),
-          h('td', { class: 'actions' }, u.id === me.id ? null : confirmButton('Remove', 'Sure?', async () => {
+          h('td', { class: 'cell-main' }, u.name, u.id === me.id ? h('span', { class: 'muted' }, ' (you)') : null),
+          h('td', { class: 'muted', 'data-label': 'Username' }, u.username),
+          // Admins' roles (including your own) can't be changed here; see roleSelect.
+          h('td', { 'data-label': 'Role' }, u.role === 'admin' ? h('span', { class: 'chip chip-role' }, u.role) : roleSelect(u)),
+          // Other admins can't be removed from the app either (only on the server).
+          h('td', { class: 'actions cell-action' }, u.role === 'admin' ? null : confirmButton('Remove', 'Sure?', async () => {
             await api('DELETE', `/api/users/${u.id}`);
             toast(`Removed ${u.username}`);
             router();
@@ -691,17 +846,25 @@ async function viewUsers() {
 }
 
 // Saves as soon as a new role is picked; on failure the select goes back to the saved role.
+// Only shown for shooters and hosts: an admin's role can't be changed from the app, so promoting
+// someone to admin is confirmed first and then shown as a plain chip.
 function roleSelect(user) {
   let saved = user.role;
   const select = h('select', {
     class: 'select-sm',
     'aria-label': `Role for ${user.username}`,
     onchange: async () => {
+      if (select.value === 'admin'
+        && !window.confirm(`Make ${user.name} an admin? Admins can't be demoted from the app afterwards.`)) {
+        select.value = saved;
+        return;
+      }
       select.disabled = true;
       try {
         await api('POST', `/api/users/${user.id}/role`, { role: select.value });
         saved = select.value;
         toast(`${user.name} is now ${saved === 'admin' ? 'an admin' : `a ${saved}`}`);
+        if (saved === 'admin') router();
       } catch (err) {
         select.value = saved;
         toast(err.message, true);
@@ -717,7 +880,7 @@ function resetPasswordForm(users) {
   const error = h('p', { class: 'error' });
   const user = h('select', { name: 'user', required: true },
     h('option', { value: '' }, 'Choose a user…'),
-    users.filter((u) => u.id !== me.id).map((u) => h('option', { value: u.id }, `${u.name} (${u.username})`)));
+    users.filter((u) => u.role !== 'admin').map((u) => h('option', { value: u.id }, `${u.name} (${u.username})`)));
   const password = h('input', { name: 'password', type: 'text', minlength: 8, autocomplete: 'off', required: true });
   const form = h('form', {
     class: 'stack',
@@ -749,9 +912,16 @@ function statTile(label, value, sub) {
 
 async function viewStats() {
   const mount = mounter();
-  const { users, events, entries, shooters, staff } = await api('GET', '/api/stats');
-  const num = (value) => h('td', { class: 'num' }, value);
+  const { users, events, entries, shooters, staff, next_offset: nextOffset } = await api('GET', '/api/stats');
+  // data-label is shown in place of the column heading when the tables stack into cards on a phone.
+  const num = (label, value) => h('td', { class: 'num', 'data-label': label }, value);
   const numHead = (label) => h('th', { class: 'num' }, label);
+  const shooterRow = (u) => h('tr', {},
+    h('td', { class: 'cell-main' }, u.name, u.role === 'shooter' ? null : [' ', h('span', { class: 'chip chip-role' }, u.role)],
+      h('div', { class: 'muted small' }, u.username)),
+    num('Events', u.events), num('Finished', u.finished), num('DNF', u.dnf), num('Wins', u.wins), num('Podiums', u.podiums),
+    h('td', { class: 'muted nowrap', 'data-label': 'Last event' }, fmtDay(u.last_event_at)));
+  const shooterBody = h('tbody', {}, shooters.map(shooterRow));
   const finishRate = entries.in_finished_events
     ? `${Math.round(100 * (1 - entries.dnf / entries.in_finished_events))}%`
     : '—';
@@ -768,25 +938,25 @@ async function viewStats() {
     h('div', { class: 'card' },
       h('h2', {}, 'Shooters'),
       shooters.length
-        ? h('div', { class: 'table-wrap' }, h('table', { class: 'board' },
+        ? h('div', { class: 'table-wrap' }, h('table', { class: 'board stack-mobile' },
           h('thead', {}, h('tr', {},
             h('th', {}, 'Shooter'), numHead('Events'), numHead('Finished'), numHead('DNF'), numHead('Wins'), numHead('Podiums'), h('th', {}, 'Last event'))),
-          h('tbody', {}, shooters.map((u) => h('tr', {},
-            h('td', {}, u.name, u.role === 'shooter' ? null : [' ', h('span', { class: 'chip chip-role' }, u.role)],
-              h('div', { class: 'muted small' }, u.username)),
-            num(u.events), num(u.finished), num(u.dnf), num(u.wins), num(u.podiums),
-            h('td', { class: 'muted nowrap' }, fmtDay(u.last_event_at)))))))
-        : h('div', { class: 'empty' }, 'No shooters yet.')),
+          shooterBody))
+        : h('div', { class: 'empty' }, 'No shooters yet.'),
+      moreButton(nextOffset, async (offset) => {
+        const page = await api('GET', `/api/stats/shooters?offset=${offset}`);
+        return { rows: page.shooters, next: page.next_offset };
+      }, (rows) => shooterBody.append(...rows.map(shooterRow)))),
     h('div', { class: 'card' },
       h('h2', {}, 'Hosts and admins'),
-      h('div', { class: 'table-wrap' }, h('table', { class: 'board' },
+      h('div', { class: 'table-wrap' }, h('table', { class: 'board stack-mobile' },
         h('thead', {}, h('tr', {},
           h('th', {}, 'Name'), h('th', {}, 'Role'), numHead('Events'), numHead('Finished'), numHead('Entries'), h('th', {}, 'Last event'))),
         h('tbody', {}, staff.map((u) => h('tr', {},
-          h('td', {}, u.name, h('div', { class: 'muted small' }, u.username)),
-          h('td', {}, h('span', { class: 'chip chip-role' }, u.role)),
-          num(u.events), num(u.finished), num(u.entries),
-          h('td', { class: 'muted nowrap' }, fmtDay(u.last_event_at))))))))));
+          h('td', { class: 'cell-main' }, u.name, h('div', { class: 'muted small' }, u.username)),
+          h('td', { 'data-label': 'Role' }, h('span', { class: 'chip chip-role' }, u.role)),
+          num('Events', u.events), num('Finished', u.finished), num('Entries', u.entries),
+          h('td', { class: 'muted nowrap', 'data-label': 'Last event' }, fmtDay(u.last_event_at))))))))));
 }
 
 setTheme(currentTheme());

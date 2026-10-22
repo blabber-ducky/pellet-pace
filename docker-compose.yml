@@ -9,6 +9,10 @@ services:
     ports:
       - "${HOST_PORT:-3000}:3000"
     environment:
+      # Timezone for server-side dates (CSV file names, logs, automatic event ends).
+      TZ: ${TZ:-Asia/Dubai}
+      # Running events are ended automatically after this many hours (0 = never).
+      AUTO_FINISH_HOURS: ${AUTO_FINISH_HOURS:-24}
       # Hostnames/IPs tablets and phones use to reach this machine, for the HTTPS certificate.
       TLS_HOSTS: ${TLS_HOSTS:-}
       # Only used the first time, when the admin account is created.
@@ -24,6 +28,12 @@ services:
       - ${DATA_DIR:-pellet-pace-data}:/app/data
       # Folder holding your own certificate and key, mounted read-only at /certs.
       - ${TLS_CERT_DIR:-./certs}:/certs:ro
+    # Keep at most 3 x 10 MB of logs instead of letting them grow forever.
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
 
 volumes:
   pellet-pace-data:
